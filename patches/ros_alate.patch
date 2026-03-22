@@ -1,0 +1,794 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index df70e2a..31c0f5f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,59 +5,52 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+   add_compile_options(-Wall -Wextra -Wpedantic)
+ endif()
+ 
+-# find dependencies
+ find_package(ament_cmake REQUIRED)
+-
+ find_package(rclcpp REQUIRED)
+ find_package(geometry_msgs REQUIRED)
+ find_package(ros_alate_interfaces REQUIRED)
+ 
+-########################## Additional Packages #########################
+-
+-# Add Boost
+ set(BOOST_ROOT ${CMAKE_FIND_ROOT_PATH} CACHE PATH "Hint to where the proper Boost is installed")
+-find_package(Boost 1.71.0 REQUIRED COMPONENTS "system" "serialization" "thread" "filesystem" "date_time")
++find_package(Boost 1.71.0 REQUIRED COMPONENTS system serialization thread filesystem date_time)
+ if(Boost_FOUND)
+   include_directories(${Boost_INCLUDE_DIRS})
+ else()
+   message(FATAL_ERROR "Could not find boost!")
+ endif()
+ 
+-#Add NeMALA
+ find_library(NeMALA_LIBRARY NAMES libNeMALA.a libNeMALA.so PATHS "/usr/local/lib/")
+ include_directories("/usr/local/include/")
+ 
+-################################# Libraries #############################
++set(EXTRA_LIBS ${EXTRA_LIBS} ${Boost_LIBRARIES} ${NeMALA_LIBRARY})
+ 
+-set (EXTRA_LIBS ${EXTRA_LIBS} ${Boost_LIBRARIES}  ${NeMALA_LIBRARY})
+-
+-#############################################################
++add_executable(adapter
++  src/ros_alate_adapter.cpp
++  src/adapter.cpp
++  src/handlers/mission_control_state_handler.cpp
++  src/handlers/high_level_control_state_handler.cpp
++  src/handlers/high_level_control_telemetry_handler.cpp
++  src/handlers/platform_error_handler.cpp
++)
+ 
+-add_executable(adapter src/ros_alate_adapter.cpp src/adapter.cpp)
+ ament_target_dependencies(
+-	adapter
+-	rclcpp
+-	geometry_msgs
+-	ros_alate_interfaces
++  adapter
++  rclcpp
++  geometry_msgs
++  ros_alate_interfaces
+ )
+-target_link_libraries (adapter ${EXTRA_LIBS})
++target_link_libraries(adapter ${EXTRA_LIBS})
+ 
+ target_include_directories(adapter PUBLIC
+   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   $<INSTALL_INTERFACE:include>)
+-target_compile_features(adapter PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
++target_compile_features(adapter PUBLIC c_std_99 cxx_std_17)
+ 
+ install(TARGETS adapter
+   DESTINATION lib/${PROJECT_NAME})
+ 
+ if(BUILD_TESTING)
+   find_package(ament_lint_auto REQUIRED)
+-  # the following line skips the linter which checks for copyrights
+-  # comment the line when a copyright and license is added to all source files
+   set(ament_cmake_copyright_FOUND TRUE)
+-  # the following line skips cpplint (only works in a git repo)
+-  # comment the line when this package is in a git repo and when
+-  # a copyright and license is added to all source files
+   set(ament_cmake_cpplint_FOUND TRUE)
+   ament_lint_auto_find_test_dependencies()
+ endif()
+diff --git a/include/ros_alate/adapter.h b/include/ros_alate/adapter.h
+index 291265f..c5e7843 100644
+--- a/include/ros_alate/adapter.h
++++ b/include/ros_alate/adapter.h
+@@ -17,55 +17,61 @@ limitations under the License.
+ #ifndef _ROS_ALATE_ADAPTER_H_
+ #define _ROS_ALATE_ADAPTER_H_
+ 
+-#include <memory>
+ #include <functional>
+ #include <future>
++#include <memory>
+ 
+ #include <boost/thread/thread.hpp>
+ 
+ #include <NeMALA/Dispatcher.h>
+ #include <NeMALA/Publisher.h>
+ 
+-#include "rclcpp/rclcpp.hpp"
+ #include "geometry_msgs/msg/twist.hpp"
++#include "rclcpp/rclcpp.hpp"
++#include "ros_alate_interfaces/msg/hlc_platform_error.hpp"
++#include "ros_alate_interfaces/msg/hlc_state.hpp"
++#include "ros_alate_interfaces/msg/hlc_telemetry.hpp"
++#include "ros_alate_interfaces/msg/mc_state.hpp"
+ #include "ros_alate_interfaces/msg/op_com.hpp"
+ #include "ros_alate_interfaces/OpComMessage.hpp"
+ #include "ros_alate_interfaces/Vector6Message.hpp"
+ 
+ namespace ros_alate {
+ 
++class MissionControlStateHandler;
++class HighLevelControlStateHandler;
++class HighLevelControlTelemetryHandler;
++class PlatformErrorHandler;
++
+ class Adapter : public rclcpp::Node
+ {
+ public:
+-	/* Constructor:
+-	 * strNodeName: ROS node name
+-	 */
+-	Adapter(std::string strNodeName = "ros_alate_adapter");
+-	~Adapter();
+-	// The Adapter is callable so it can spin and dispatch on different threads.
+-	int operator()();
+-	// The Adapter spins as long as the dispatcher dispatches. A shared future synchronizes the threads with the promise that the dispatcher will eventually stop.
+-	std::shared_future<void> GetFutureDoneDispatching(){return m_promiseDoneDispatching.get_future().share();}
+-	// ...but if the promise is broken, the dispatcher is interrupted, just in time to terminate the node.
+-	void InterruptDispatcherThread(){m_bInterrupted = true;}
++  explicit Adapter(std::string strNodeName = "ros_alate_adapter");
++  ~Adapter();
++  int operator()();
++  std::shared_future<void> GetFutureDoneDispatching(){return m_promiseDoneDispatching.get_future().share();}
++  void InterruptDispatcherThread(){m_bInterrupted = true;}
+ 
+ private:
++  void callback_Velocity(const geometry_msgs::msg::Twist &msg) const;
++  void callback_OpCom(const ros_alate_interfaces::msg::OpCom &msg) const;
+ 
+-	/********* Callbacks *********/
+-	
+-	void callback_Velocity(const geometry_msgs::msg::Twist &msg) const;
+-	void callback_OpCom(const ros_alate_interfaces::msg::OpCom &msg) const;
+-	
+-	/********* Attributes *********/
+-
+-	bool m_bInterrupted;
+-	rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr m_pSubscriptionVelocity;
+-	rclcpp::Subscription<ros_alate_interfaces::msg::OpCom>::SharedPtr m_pSubscriptionOpCom;
+-	NeMALA::Publisher* m_pPublisherOpCom;
+-	NeMALA::Publisher* m_pPublisherVelocity;
+-	std::shared_ptr<NeMALA::Dispatcher> m_pDispatcher;
+-	boost::thread* m_pThreadDispatcher;
+-	std::promise<void> m_promiseDoneDispatching;
++  bool m_bInterrupted;
++  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr m_pSubscriptionVelocity;
++  rclcpp::Subscription<ros_alate_interfaces::msg::OpCom>::SharedPtr m_pSubscriptionOpCom;
++  rclcpp::Publisher<ros_alate_interfaces::msg::McState>::SharedPtr m_pPublisherMcState;
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcState>::SharedPtr m_pPublisherHlcState;
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcTelemetry>::SharedPtr m_pPublisherHlcTelemetry;
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcPlatformError>::SharedPtr m_pPublisherHlcPlatformError;
++  NeMALA::Publisher* m_pPublisherOpCom;
++  NeMALA::Publisher* m_pPublisherVelocity;
++  MissionControlStateHandler* m_pHandlerMcState;
++  HighLevelControlStateHandler* m_pHandlerHlcState;
++  HighLevelControlTelemetryHandler* m_pHandlerHlcTelemetry;
++  PlatformErrorHandler* m_pHandlerHlcPlatformError;
++  std::shared_ptr<NeMALA::Dispatcher> m_pDispatcher;
++  boost::thread* m_pThreadDispatcher;
++  std::promise<void> m_promiseDoneDispatching;
+ };
+ 
+ }  // namespace ros_alate
+diff --git a/include/ros_alate/handlers/high_level_control_state_handler.h b/include/ros_alate/handlers/high_level_control_state_handler.h
+new file mode 100644
+index 0000000..7a860ea
+--- /dev/null
++++ b/include/ros_alate/handlers/high_level_control_state_handler.h
+@@ -0,0 +1,35 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#ifndef _ROS_ALATE_HIGH_LEVEL_CONTROL_STATE_HANDLER_H_
++#define _ROS_ALATE_HIGH_LEVEL_CONTROL_STATE_HANDLER_H_
++
++#include <NeMALA/Handler.h>
++#include "rclcpp/rclcpp.hpp"
++#include "ros_alate_interfaces/msg/hlc_state.hpp"
++
++namespace ros_alate {
++
++class HighLevelControlStateHandler : public NeMALA::Handler
++{
++public:
++  explicit HighLevelControlStateHandler(rclcpp::Publisher<ros_alate_interfaces::msg::HlcState>::SharedPtr pPublisher):
++    m_pPublisher(pPublisher) {}
++  ~HighLevelControlStateHandler() {}
++
++  void Handle(NeMALA::Proptree pt) override;
++
++private:
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcState>::SharedPtr m_pPublisher;
++};
++
++} // namespace ros_alate
++
++#endif // _ROS_ALATE_HIGH_LEVEL_CONTROL_STATE_HANDLER_H_
+diff --git a/include/ros_alate/handlers/high_level_control_telemetry_handler.h b/include/ros_alate/handlers/high_level_control_telemetry_handler.h
+new file mode 100644
+index 0000000..4e155f4
+--- /dev/null
++++ b/include/ros_alate/handlers/high_level_control_telemetry_handler.h
+@@ -0,0 +1,35 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#ifndef _ROS_ALATE_HIGH_LEVEL_CONTROL_TELEMETRY_HANDLER_H_
++#define _ROS_ALATE_HIGH_LEVEL_CONTROL_TELEMETRY_HANDLER_H_
++
++#include <NeMALA/Handler.h>
++#include "rclcpp/rclcpp.hpp"
++#include "ros_alate_interfaces/msg/hlc_telemetry.hpp"
++
++namespace ros_alate {
++
++class HighLevelControlTelemetryHandler : public NeMALA::Handler
++{
++public:
++  explicit HighLevelControlTelemetryHandler(rclcpp::Publisher<ros_alate_interfaces::msg::HlcTelemetry>::SharedPtr pPublisher):
++    m_pPublisher(pPublisher) {}
++  ~HighLevelControlTelemetryHandler() {}
++
++  void Handle(NeMALA::Proptree pt) override;
++
++private:
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcTelemetry>::SharedPtr m_pPublisher;
++};
++
++} // namespace ros_alate
++
++#endif // _ROS_ALATE_HIGH_LEVEL_CONTROL_TELEMETRY_HANDLER_H_
+diff --git a/include/ros_alate/handlers/mission_control_state_handler.h b/include/ros_alate/handlers/mission_control_state_handler.h
+new file mode 100644
+index 0000000..6cae0da
+--- /dev/null
++++ b/include/ros_alate/handlers/mission_control_state_handler.h
+@@ -0,0 +1,35 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#ifndef _ROS_ALATE_MISSION_CONTROL_STATE_HANDLER_H_
++#define _ROS_ALATE_MISSION_CONTROL_STATE_HANDLER_H_
++
++#include <NeMALA/Handler.h>
++#include "rclcpp/rclcpp.hpp"
++#include "ros_alate_interfaces/msg/mc_state.hpp"
++
++namespace ros_alate {
++
++class MissionControlStateHandler : public NeMALA::Handler
++{
++public:
++  explicit MissionControlStateHandler(rclcpp::Publisher<ros_alate_interfaces::msg::McState>::SharedPtr pPublisher):
++    m_pPublisher(pPublisher) {}
++  ~MissionControlStateHandler() {}
++
++  void Handle(NeMALA::Proptree pt) override;
++
++private:
++  rclcpp::Publisher<ros_alate_interfaces::msg::McState>::SharedPtr m_pPublisher;
++};
++
++} // namespace ros_alate
++
++#endif // _ROS_ALATE_MISSION_CONTROL_STATE_HANDLER_H_
+diff --git a/include/ros_alate/handlers/platform_error_handler.h b/include/ros_alate/handlers/platform_error_handler.h
+new file mode 100644
+index 0000000..c4fff50
+--- /dev/null
++++ b/include/ros_alate/handlers/platform_error_handler.h
+@@ -0,0 +1,35 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#ifndef _ROS_ALATE_PLATFORM_ERROR_HANDLER_H_
++#define _ROS_ALATE_PLATFORM_ERROR_HANDLER_H_
++
++#include <NeMALA/Handler.h>
++#include "rclcpp/rclcpp.hpp"
++#include "ros_alate_interfaces/msg/hlc_platform_error.hpp"
++
++namespace ros_alate {
++
++class PlatformErrorHandler : public NeMALA::Handler
++{
++public:
++  explicit PlatformErrorHandler(rclcpp::Publisher<ros_alate_interfaces::msg::HlcPlatformError>::SharedPtr pPublisher):
++    m_pPublisher(pPublisher) {}
++  ~PlatformErrorHandler() {}
++
++  void Handle(NeMALA::Proptree pt) override;
++
++private:
++  rclcpp::Publisher<ros_alate_interfaces::msg::HlcPlatformError>::SharedPtr m_pPublisher;
++};
++
++} // namespace ros_alate
++
++#endif // _ROS_ALATE_PLATFORM_ERROR_HANDLER_H_
+diff --git a/param/adapter.yaml b/param/adapter.yaml
+index b2c830e..5cbfc5b 100644
+--- a/param/adapter.yaml
++++ b/param/adapter.yaml
+@@ -1,9 +1,12 @@
+ /ros_alate_adapter:
+   ros__parameters:
+     alate_operator_command_topic: 101
++    alate_mission_control_state_topic: 102
++    alate_high_level_control_state_topic: 103
+     alate_velocity_topic: 104
++    alate_high_level_control_telemetry_topic: 105
++    alate_high_level_control_platform_error_topic: 106
+     nemala_node_id: 402
+     proxy_endpoint_for_publishing: ipc:///tmp/alate_publishers
+     proxy_endpoint_for_subscribing: ipc:///tmp/alate_subscribers
+     use_sim_time: false
+-
+diff --git a/src/adapter.cpp b/src/adapter.cpp
+index d67292d..f69bbb5 100644
+--- a/src/adapter.cpp
++++ b/src/adapter.cpp
+@@ -15,151 +15,178 @@ limitations under the License.
+ */
+ 
+ #include "ros_alate/adapter.h"
+-
++#include "ros_alate/handlers/high_level_control_state_handler.h"
++#include "ros_alate/handlers/high_level_control_telemetry_handler.h"
++#include "ros_alate/handlers/mission_control_state_handler.h"
++#include "ros_alate/handlers/platform_error_handler.h"
+ 
+ namespace ros_alate {
+ 
+-Adapter::Adapter(std::string strNodeName) : Node(strNodeName), 	m_bInterrupted(false), m_pThreadDispatcher(NULL)
++Adapter::Adapter(std::string strNodeName) :
++  Node(strNodeName),
++  m_bInterrupted(false),
++  m_pPublisherOpCom(NULL),
++  m_pPublisherVelocity(NULL),
++  m_pHandlerMcState(NULL),
++  m_pHandlerHlcState(NULL),
++  m_pHandlerHlcTelemetry(NULL),
++  m_pHandlerHlcPlatformError(NULL),
++  m_pThreadDispatcher(NULL)
+ {
+-	/***	ROS Params	***/
+-
+-	auto param_descriptor = rcl_interfaces::msg::ParameterDescriptor{};
+-
+-	param_descriptor.description = "The NeMALA node ID, how the dispatcher calls itself.";
+-	this->declare_parameter("nemala_node_id", 402, param_descriptor);
+-	param_descriptor.description = "The NeMALA topic ID for the operator command, how the dispatcher knows which handler to call.";
+-	this->declare_parameter("alate_operator_command_topic", 101, param_descriptor);
+-	param_descriptor.description = "The NeMALA topic ID for the velocity command, how the dispatcher knows which handler to call.";
+-	this->declare_parameter("alate_velocity_topic", 104, param_descriptor);
+-	param_descriptor.description = "The NeMALA proxy endpoint for subscriptions. This is the port the dispatcher listens to.";
+-	this->declare_parameter("proxy_endpoint_for_subscribing", "ipc:///tmp/alate_subscribers", param_descriptor);
+-	param_descriptor.description = "The NeMALA proxy endpoint for publishing. This is the port the publishers write to.";
+-	this->declare_parameter("proxy_endpoint_for_publishing", "ipc:///tmp/alate_publishers", param_descriptor);
+-	
+-	rclcpp::Parameter param_nemala_node_id = this->get_parameter("nemala_node_id");
+-	rclcpp::Parameter param_alate_operator_command_topic = this->get_parameter("alate_operator_command_topic");
+-	rclcpp::Parameter param_alate_velocity_topic = this->get_parameter("alate_velocity_topic");
+-	rclcpp::Parameter param_proxy_endpoint_for_subscribing = this->get_parameter("proxy_endpoint_for_subscribing");
+-	rclcpp::Parameter param_proxy_endpoint_for_publishing = this->get_parameter("proxy_endpoint_for_publishing");
+-	
+-	/***	NeMALA Handlers	***/
+-	
+-	
+-	
+-	/***	NeMALA Publishers	***/
+-	
+-	m_pPublisherOpCom = new NeMALA::Publisher(
+-												param_proxy_endpoint_for_publishing.as_string().c_str(),
+-												(unsigned int) param_alate_operator_command_topic.as_int()
+-											 );
+-	m_pPublisherVelocity = new NeMALA::Publisher(
+-													param_proxy_endpoint_for_publishing.as_string().c_str(),
+-													(unsigned int) param_alate_velocity_topic.as_int()
+-												);
+-	
+-	/***	NeMALA Dispatcher	***/
+-	
+-	m_pDispatcher = std::make_shared<NeMALA::Dispatcher>(
+-															1,
+-															0,
+-															param_nemala_node_id.as_int(),
+-															param_proxy_endpoint_for_subscribing.as_string()
+-														 );
+-	
+-	m_pDispatcher->AddPublisher(m_pPublisherOpCom);
+-	m_pDispatcher->AddPublisher(m_pPublisherVelocity);
+-	
+-	/***	ROS Subscriptions	***/
+-
+-	m_pSubscriptionVelocity = this->create_subscription<geometry_msgs::msg::Twist>(
+-		"alate_input_velocity", 10, std::bind(&Adapter::callback_Velocity, this, std::placeholders::_1)
+-	);
+-	m_pSubscriptionOpCom = this->create_subscription<ros_alate_interfaces::msg::OpCom>(
+-		"alate_input_operator_command", 10, std::bind(&Adapter::callback_OpCom, this, std::placeholders::_1)
+-	);
+-
+-	/***	ROS Publishers	***/
+-
+-	// TODO: find an elegant way to share this adapter's dispatcher and promise between threads - this is not the way to do it.
+-	// This works but if the node is interrupted and the dispatcher thread lives beyond the point where the adapter gets destructed, bad things happen.
+-	m_pThreadDispatcher = new boost::thread(boost::ref(*this));
++  auto param_descriptor = rcl_interfaces::msg::ParameterDescriptor{};
++
++  param_descriptor.description = "The NeMALA node ID, how the dispatcher calls itself.";
++  this->declare_parameter("nemala_node_id", 402, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the operator command, how the dispatcher knows which handler to call.";
++  this->declare_parameter("alate_operator_command_topic", 101, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the mission control state output.";
++  this->declare_parameter("alate_mission_control_state_topic", 102, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the high level control state output.";
++  this->declare_parameter("alate_high_level_control_state_topic", 103, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the velocity command, how the dispatcher knows which handler to call.";
++  this->declare_parameter("alate_velocity_topic", 104, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the high level control telemetry output.";
++  this->declare_parameter("alate_high_level_control_telemetry_topic", 105, param_descriptor);
++  param_descriptor.description = "The NeMALA topic ID for the high level control platform error output.";
++  this->declare_parameter("alate_high_level_control_platform_error_topic", 106, param_descriptor);
++  param_descriptor.description = "The NeMALA proxy endpoint for subscriptions. This is the port the dispatcher listens to.";
++  this->declare_parameter("proxy_endpoint_for_subscribing", "ipc:///tmp/alate_subscribers", param_descriptor);
++  param_descriptor.description = "The NeMALA proxy endpoint for publishing. This is the port the publishers write to.";
++  this->declare_parameter("proxy_endpoint_for_publishing", "ipc:///tmp/alate_publishers", param_descriptor);
++
++  rclcpp::Parameter param_nemala_node_id = this->get_parameter("nemala_node_id");
++  rclcpp::Parameter param_alate_operator_command_topic = this->get_parameter("alate_operator_command_topic");
++  rclcpp::Parameter param_alate_mission_control_state_topic = this->get_parameter("alate_mission_control_state_topic");
++  rclcpp::Parameter param_alate_high_level_control_state_topic = this->get_parameter("alate_high_level_control_state_topic");
++  rclcpp::Parameter param_alate_velocity_topic = this->get_parameter("alate_velocity_topic");
++  rclcpp::Parameter param_alate_high_level_control_telemetry_topic = this->get_parameter("alate_high_level_control_telemetry_topic");
++  rclcpp::Parameter param_alate_high_level_control_platform_error_topic = this->get_parameter("alate_high_level_control_platform_error_topic");
++  rclcpp::Parameter param_proxy_endpoint_for_subscribing = this->get_parameter("proxy_endpoint_for_subscribing");
++  rclcpp::Parameter param_proxy_endpoint_for_publishing = this->get_parameter("proxy_endpoint_for_publishing");
++
++  m_pPublisherMcState = this->create_publisher<ros_alate_interfaces::msg::McState>(
++    "alate_output_mission_control_state", 10
++  );
++  m_pPublisherHlcState = this->create_publisher<ros_alate_interfaces::msg::HlcState>(
++    "alate_output_high_level_control_state", 10
++  );
++  m_pPublisherHlcTelemetry = this->create_publisher<ros_alate_interfaces::msg::HlcTelemetry>(
++    "alate_output_high_level_control_telemetry", 10
++  );
++  m_pPublisherHlcPlatformError = this->create_publisher<ros_alate_interfaces::msg::HlcPlatformError>(
++    "alate_output_high_level_control_platform_errors", 10
++  );
++
++  m_pHandlerMcState = new MissionControlStateHandler(m_pPublisherMcState);
++  m_pHandlerHlcState = new HighLevelControlStateHandler(m_pPublisherHlcState);
++  m_pHandlerHlcTelemetry = new HighLevelControlTelemetryHandler(m_pPublisherHlcTelemetry);
++  m_pHandlerHlcPlatformError = new PlatformErrorHandler(m_pPublisherHlcPlatformError);
++
++  m_pPublisherOpCom = new NeMALA::Publisher(
++    param_proxy_endpoint_for_publishing.as_string().c_str(),
++    static_cast<unsigned int>(param_alate_operator_command_topic.as_int())
++  );
++  m_pPublisherVelocity = new NeMALA::Publisher(
++    param_proxy_endpoint_for_publishing.as_string().c_str(),
++    static_cast<unsigned int>(param_alate_velocity_topic.as_int())
++  );
++
++  m_pDispatcher = std::make_shared<NeMALA::Dispatcher>(
++    1,
++    0,
++    param_nemala_node_id.as_int(),
++    param_proxy_endpoint_for_subscribing.as_string()
++  );
++
++  m_pDispatcher->AddPublisher(m_pPublisherOpCom);
++  m_pDispatcher->AddPublisher(m_pPublisherVelocity);
++  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_mission_control_state_topic.as_int()), m_pHandlerMcState);
++  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_high_level_control_state_topic.as_int()), m_pHandlerHlcState);
++  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_high_level_control_telemetry_topic.as_int()), m_pHandlerHlcTelemetry);
++  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_high_level_control_platform_error_topic.as_int()), m_pHandlerHlcPlatformError);
++
++  m_pSubscriptionVelocity = this->create_subscription<geometry_msgs::msg::Twist>(
++    "alate_input_velocity", 10, std::bind(&Adapter::callback_Velocity, this, std::placeholders::_1)
++  );
++  m_pSubscriptionOpCom = this->create_subscription<ros_alate_interfaces::msg::OpCom>(
++    "alate_input_operator_command", 10, std::bind(&Adapter::callback_OpCom, this, std::placeholders::_1)
++  );
++
++  m_pThreadDispatcher = new boost::thread(boost::ref(*this));
+ }
+ 
+ Adapter::~Adapter()
+ {
+-	RCLCPP_INFO(this->get_logger(), "Shutting down");
+-	if (!m_bInterrupted)
+-	{
+-		m_pThreadDispatcher->join(); // wait for thread to gently close down
+-		RCLCPP_INFO(this->get_logger(), "Dispatcher thread joined");
+-	}
+-	else
+-	{
+-		m_pThreadDispatcher->detach(); // We'll see you in hell!
+-		RCLCPP_INFO(this->get_logger(), "Dispatcher thread detached");
+-	}
+-	delete m_pPublisherVelocity;
+-	RCLCPP_DEBUG(this->get_logger(), "There goes the m_pPublisherVelocity");
+-	delete m_pPublisherOpCom;
+-	RCLCPP_DEBUG(this->get_logger(), "There goes the m_pPublisherOpCom");
+-	delete m_pThreadDispatcher;
+-	RCLCPP_DEBUG(this->get_logger(), "There goes the dispatcher thread");
+-
+-	RCLCPP_DEBUG(this->get_logger(), "Finished");
++  RCLCPP_INFO(this->get_logger(), "Shutting down");
++  if (!m_bInterrupted)
++  {
++    m_pThreadDispatcher->join();
++    RCLCPP_INFO(this->get_logger(), "Dispatcher thread joined");
++  }
++  else
++  {
++    m_pThreadDispatcher->detach();
++    RCLCPP_INFO(this->get_logger(), "Dispatcher thread detached");
++  }
++  delete m_pPublisherVelocity;
++  delete m_pPublisherOpCom;
++  delete m_pHandlerMcState;
++  delete m_pHandlerHlcState;
++  delete m_pHandlerHlcTelemetry;
++  delete m_pHandlerHlcPlatformError;
++  delete m_pThreadDispatcher;
++  RCLCPP_DEBUG(this->get_logger(), "Finished");
+ }
+ 
+ int Adapter::operator()()
+ {
+-	int nResult(0);
+-	RCLCPP_INFO(this->get_logger(), "Running the dispatcher");
+-	try
+-	{
+-		m_pDispatcher->Dispatch();
+-	}
+-	catch (std::exception& e)
+-	{
+-		RCLCPP_ERROR(this->get_logger(), "Dispatcher error: '%s'", e.what());
+-		nResult = 1;
+-	}
+-	RCLCPP_DEBUG(this->get_logger(), "Dispatcher stopped");
+-	m_promiseDoneDispatching.set_value();
+-	RCLCPP_INFO(this->get_logger(), "Dispatcher Done");
+-	return nResult;
++  int nResult(0);
++  RCLCPP_INFO(this->get_logger(), "Running the dispatcher");
++  try
++  {
++    m_pDispatcher->Dispatch();
++  }
++  catch (std::exception& e)
++  {
++    RCLCPP_ERROR(this->get_logger(), "Dispatcher error: '%s'", e.what());
++    nResult = 1;
++  }
++  m_promiseDoneDispatching.set_value();
++  RCLCPP_INFO(this->get_logger(), "Dispatcher Done");
++  return nResult;
+ }
+ 
+-
+ void Adapter::callback_Velocity(const geometry_msgs::msg::Twist &msg) const
+ {
+-	ros_alate_interfaces::Vector6Message VelComMsg(msg.linear.x, msg.linear.y, msg.linear.z, msg.angular.z, msg.angular.y, msg.angular.x);
+-	m_pPublisherVelocity->Publish(VelComMsg);
++  ros_alate_interfaces::Vector6Message vel_com_msg(msg.linear.x, msg.linear.y, msg.linear.z, msg.angular.z, msg.angular.y, msg.angular.x);
++  m_pPublisherVelocity->Publish(vel_com_msg);
+ }
+ 
+ void Adapter::callback_OpCom(const ros_alate_interfaces::msg::OpCom &msg) const
+ {
+-	RCLCPP_DEBUG(this->get_logger(), "callback_OpCom received enum: %d.", msg.op_com_enum);
+-	ros_alate_interfaces::OpComMessage::OpCommandEnum eCom(ros_alate_interfaces::OpComMessage::OpCommandNone);
+-	switch(msg.op_com_enum)
+-	{
+-		case ros_alate_interfaces::msg::OpCom::OP_COMMAND_TAKEOFF:
+-			eCom = ros_alate_interfaces::OpComMessage::OpCommandTakeoff;
+-			break;
+-		case ros_alate_interfaces::msg::OpCom::OP_COMMAND_LAND:
+-			eCom = ros_alate_interfaces::OpComMessage::OpCommandLand;
+-			break;
+-		case ros_alate_interfaces::msg::OpCom::OP_COMMAND_GOHOME:
+-			eCom = ros_alate_interfaces::OpComMessage::OpCommandGoHome;
+-			break;
+-		case ros_alate_interfaces::msg::OpCom::OP_COMMAND_SETDIRECTION:
+-			eCom = ros_alate_interfaces::OpComMessage::OpCommandSetDirection;
+-			break;
+-		case ros_alate_interfaces::msg::OpCom::OP_COMMAND_AUX:
+-			eCom = ros_alate_interfaces::OpComMessage::OpCommandAux;
+-			break;
+-		default:
+-			RCLCPP_WARN(this->get_logger(), "callback_OpCom received INVALID enum: %d", msg.op_com_enum);
+-	}
+-	ros_alate_interfaces::OpComMessage msgCom(eCom);
+-	m_pPublisherOpCom->Publish(msgCom);
++  ros_alate_interfaces::OpComMessage::OpCommandEnum eCom(ros_alate_interfaces::OpComMessage::OpCommandNone);
++  switch(msg.op_com_enum)
++  {
++    case ros_alate_interfaces::msg::OpCom::OP_COMMAND_TAKEOFF:
++      eCom = ros_alate_interfaces::OpComMessage::OpCommandTakeoff;
++      break;
++    case ros_alate_interfaces::msg::OpCom::OP_COMMAND_LAND:
++      eCom = ros_alate_interfaces::OpComMessage::OpCommandLand;
++      break;
++    case ros_alate_interfaces::msg::OpCom::OP_COMMAND_GOHOME:
++      eCom = ros_alate_interfaces::OpComMessage::OpCommandGoHome;
++      break;
++    case ros_alate_interfaces::msg::OpCom::OP_COMMAND_SETDIRECTION:
++      eCom = ros_alate_interfaces::OpComMessage::OpCommandSetDirection;
++      break;
++    case ros_alate_interfaces::msg::OpCom::OP_COMMAND_AUX:
++      eCom = ros_alate_interfaces::OpComMessage::OpCommandAux;
++      break;
++    default:
++      RCLCPP_WARN(this->get_logger(), "callback_OpCom received INVALID enum: %d", msg.op_com_enum);
++  }
++  ros_alate_interfaces::OpComMessage msgCom(eCom);
++  m_pPublisherOpCom->Publish(msgCom);
+ }
+ 
+ } // namespace ros_alate
+diff --git a/src/handlers/high_level_control_state_handler.cpp b/src/handlers/high_level_control_state_handler.cpp
+new file mode 100644
+index 0000000..6911348
+--- /dev/null
++++ b/src/handlers/high_level_control_state_handler.cpp
+@@ -0,0 +1,24 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#include "ros_alate/handlers/high_level_control_state_handler.h"
++#include "ros_alate_interfaces/HlcStateMessage.hpp"
++
++namespace ros_alate {
++
++void HighLevelControlStateHandler::Handle(NeMALA::Proptree pt)
++{
++  ros_alate_interfaces::HlcStateMessage msg(pt);
++  ros_alate_interfaces::msg::HlcState ros_msg;
++  ros_msg.hlc_state_enum = static_cast<decltype(ros_msg.hlc_state_enum)>(msg.GetValue());
++  m_pPublisher->publish(ros_msg);
++}
++
++} // namespace ros_alate
+diff --git a/src/handlers/high_level_control_telemetry_handler.cpp b/src/handlers/high_level_control_telemetry_handler.cpp
+new file mode 100644
+index 0000000..01cc6bd
+--- /dev/null
++++ b/src/handlers/high_level_control_telemetry_handler.cpp
+@@ -0,0 +1,34 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#include "ros_alate/handlers/high_level_control_telemetry_handler.h"
++#include "ros_alate_interfaces/LlcStatusMessage.hpp"
++
++namespace ros_alate {
++
++void HighLevelControlTelemetryHandler::Handle(NeMALA::Proptree pt)
++{
++  ros_alate_interfaces::LlcStatusMessage msg(pt);
++  ros_alate_interfaces::LlcStatusMessage::LlcStateStruct llc = msg.GetLlcStatus();
++  ros_alate_interfaces::msg::HlcTelemetry ros_msg;
++  ros_msg.latitude = llc.dLatitude;
++  ros_msg.longitude = llc.dLongitude;
++  ros_msg.altitude = llc.dAltitude;
++  ros_msg.yaw = llc.dYaw;
++  ros_msg.armed = llc.bArmed;
++  ros_msg.battery_voltage = llc.dBatteryVoltage;
++  ros_msg.gps_fix = static_cast<decltype(ros_msg.gps_fix)>(llc.nGpsFix);
++  ros_msg.gps_hdop = llc.dGpsHdop;
++  ros_msg.mode = llc.strMode;
++  ros_msg.state = llc.strState;
++  m_pPublisher->publish(ros_msg);
++}
++
++} // namespace ros_alate
+diff --git a/src/handlers/mission_control_state_handler.cpp b/src/handlers/mission_control_state_handler.cpp
+new file mode 100644
+index 0000000..90a4b8f
+--- /dev/null
++++ b/src/handlers/mission_control_state_handler.cpp
+@@ -0,0 +1,24 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#include "ros_alate/handlers/mission_control_state_handler.h"
++#include "ros_alate_interfaces/McStateMessage.hpp"
++
++namespace ros_alate {
++
++void MissionControlStateHandler::Handle(NeMALA::Proptree pt)
++{
++  ros_alate_interfaces::McStateMessage msg(pt);
++  ros_alate_interfaces::msg::McState ros_msg;
++  ros_msg.mc_state_enum = static_cast<decltype(ros_msg.mc_state_enum)>(msg.GetValue());
++  m_pPublisher->publish(ros_msg);
++}
++
++} // namespace ros_alate
+diff --git a/src/handlers/platform_error_handler.cpp b/src/handlers/platform_error_handler.cpp
+new file mode 100644
+index 0000000..bd33392
+--- /dev/null
++++ b/src/handlers/platform_error_handler.cpp
+@@ -0,0 +1,24 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++*/
++
++#include "ros_alate/handlers/platform_error_handler.h"
++#include "ros_alate_interfaces/StringMessage.hpp"
++
++namespace ros_alate {
++
++void PlatformErrorHandler::Handle(NeMALA::Proptree pt)
++{
++  ros_alate_interfaces::StringMessage msg(pt);
++  ros_alate_interfaces::msg::HlcPlatformError ros_msg;
++  ros_msg.error_text = msg.GetContent();
++  m_pPublisher->publish(ros_msg);
++}
++
++} // namespace ros_alate

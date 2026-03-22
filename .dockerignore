@@ -1,0 +1,11 @@
+.git
+external/alate/.git
+external/nemala_core/.git
+ws/src/ros_alate/.git
+ws/src/ros_alate_interfaces/.git
+ws/src/ros_nemala/.git
+ws/src/ros_nemala_interfaces/.git
+ws/build
+ws/install
+ws/log
+logs

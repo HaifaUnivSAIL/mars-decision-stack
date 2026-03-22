@@ -1,0 +1,131 @@
+name: mars-decision-stack
+
+x-stack-image: &stack-image
+  build:
+    context: ..
+    dockerfile: docker/alate-ros-stack.Dockerfile
+  image: mars-decision-stack:local
+
+x-stack-service: &stack-service
+  <<: *stack-image
+  restart: unless-stopped
+  volumes:
+    - ipc:/tmp/nemala
+    - ../config:/stack/config:ro
+
+services:
+  sitl:
+    image: davidovrat/arducopter-sitl@sha256:acc41a3e9897ffae32c8d0f1c0787c5a10ca39119a5066651848771ed4fdef67
+    restart: unless-stopped
+    entrypoint:
+      - /ardupilot/build/sitl/bin/arducopter
+    command:
+      - -S
+      - -I0
+      - --model
+      - +
+      - --defaults
+      - /ardupilot/Tools/autotest/default_params/copter.parm
+    networks:
+      mav:
+        aliases:
+          - sitl
+
+  proxy:
+    image: nemala/tools@sha256:471f1261c51932bec05a771d49545172b2b01e791de7425d1b4e10de06b9b8a3
+    restart: unless-stopped
+    volumes:
+      - ipc:/tmp/nemala
+      - ../config:/stack/config:ro
+    command:
+      - proxy
+      - uav
+      - /stack/config/alate/uav.sitl.json
+
+  logger:
+    image: nemala/tools@sha256:471f1261c51932bec05a771d49545172b2b01e791de7425d1b4e10de06b9b8a3
+    restart: unless-stopped
+    depends_on:
+      - proxy
+    volumes:
+      - ipc:/tmp/nemala
+      - ../logs:/stack/logs
+    command:
+      - log
+      - ipc:///tmp/nemala/alate_log
+
+  mc:
+    <<: *stack-service
+    depends_on:
+      - proxy
+    working_dir: /opt/alate
+    command:
+      - ./mc
+      - uav
+      - /stack/config/alate/uav.sitl.json
+
+  hlc:
+    <<: *stack-service
+    depends_on:
+      - proxy
+      - sitl
+    working_dir: /opt/alate
+    command:
+      - ./hlc
+      - uav
+      - /stack/config/alate/uav.sitl.json
+    networks:
+      - default
+      - mav
+
+  ros-alate:
+    <<: *stack-service
+    depends_on:
+      - proxy
+      - mc
+      - hlc
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+    command:
+      - bash
+      - -lc
+      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_alate adapter --ros-args --params-file /stack/config/ros_alate/adapter.yaml
+
+  ros-nemala:
+    <<: *stack-service
+    depends_on:
+      - proxy
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+    command:
+      - bash
+      - -lc
+      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_nemala node_manager --ros-args --params-file /stack/config/ros_nemala/node_manager.yaml
+
+  decision-dev:
+    <<: *stack-service
+    profiles:
+      - dev
+    depends_on:
+      - ros-alate
+      - ros-nemala
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+    working_dir: /workspace/ws
+    stdin_open: true
+    tty: true
+    volumes:
+      - ipc:/tmp/nemala
+      - ../config:/workspace/config:ro
+      - ../ws:/workspace/ws:rw
+      - ../external:/workspace/external:ro
+    command:
+      - bash
+      - -lc
+      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && sleep infinity
+
+volumes:
+  ipc:
+
+networks:
+  mav:

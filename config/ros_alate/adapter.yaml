@@ -1,0 +1,12 @@
+/ros_alate_adapter:
+  ros__parameters:
+    alate_operator_command_topic: 101
+    alate_mission_control_state_topic: 102
+    alate_high_level_control_state_topic: 103
+    alate_velocity_topic: 104
+    alate_high_level_control_telemetry_topic: 105
+    alate_high_level_control_platform_error_topic: 106
+    nemala_node_id: 402
+    proxy_endpoint_for_publishing: ipc:///tmp/nemala/alate_publishers
+    proxy_endpoint_for_subscribing: ipc:///tmp/nemala/alate_subscribers
+    use_sim_time: false

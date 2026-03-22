@@ -1,0 +1,4 @@
+/nemala_node_manager:
+  ros__parameters:
+    proxy_endpoint_publishers: ipc:///tmp/nemala/alate_publishers
+    use_sim_time: false

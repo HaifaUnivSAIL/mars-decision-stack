@@ -1,0 +1,264 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 69bff7c..417a5b4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -12,6 +12,9 @@ find_package(rosidl_default_generators REQUIRED)
+ set(msg_files
+   "msg/OpCom.msg"
+   "msg/McState.msg"
++  "msg/HlcState.msg"
++  "msg/HlcTelemetry.msg"
++  "msg/HlcPlatformError.msg"
+ )
+ 
+ rosidl_generate_interfaces(${PROJECT_NAME}
+diff --git a/include/ros_alate_interfaces/ros_alate_interfaces/HlcStateMessage.hpp b/include/ros_alate_interfaces/ros_alate_interfaces/HlcStateMessage.hpp
+new file mode 100644
+index 0000000..f93348c
+--- /dev/null
++++ b/include/ros_alate_interfaces/ros_alate_interfaces/HlcStateMessage.hpp
+@@ -0,0 +1,63 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++#ifndef _ROS_ALATE_INTERFACES_HLC_STATE_MESSAGE_H_
++#define _ROS_ALATE_INTERFACES_HLC_STATE_MESSAGE_H_
++
++#include <NeMALA/MessagePropertyTree.h>
++
++namespace ros_alate_interfaces {
++
++class HlcStateMessage : public NeMALA::MessagePropertyTree
++{
++public:
++	typedef enum
++	{
++		HlcStateNone=0,
++		HlcStateInit,
++		HlcStateWaitingForMc,
++		HlcStateWaitingForLlc,
++		HlcStateReady,
++		HlcStateTakeoff,
++		HlcStateGainingAltitude,
++		HlcStateAirborne,
++		HlcStateLanding,
++		HlcStateManual,
++		HlcStateRTL,
++		HlcStateNoError,
++		HlcStateLowBattery,
++		HlcStateLlcDown
++	} HlcStateEnum;
++
++	HlcStateMessage(HlcStateEnum eState): m_eState(eState) {}
++	HlcStateMessage(NeMALA::Proptree pt):
++		m_eState((HlcStateEnum)pt.get<double>("State")) {}
++	~HlcStateMessage() {}
++
++	void BuildMessage()
++	{
++		AddElementNumber("State", m_eState);
++	}
++
++	HlcStateEnum GetValue() const {return m_eState;}
++
++private:
++	HlcStateEnum m_eState;
++};
++
++} // namespace ros_alate_interfaces
++
++#endif // _ROS_ALATE_INTERFACES_HLC_STATE_MESSAGE_H_
+diff --git a/include/ros_alate_interfaces/ros_alate_interfaces/LlcStatusMessage.hpp b/include/ros_alate_interfaces/ros_alate_interfaces/LlcStatusMessage.hpp
+new file mode 100644
+index 0000000..36356ad
+--- /dev/null
++++ b/include/ros_alate_interfaces/ros_alate_interfaces/LlcStatusMessage.hpp
+@@ -0,0 +1,79 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++#ifndef _ROS_ALATE_INTERFACES_LLC_STATUS_MESSAGE_H_
++#define _ROS_ALATE_INTERFACES_LLC_STATUS_MESSAGE_H_
++
++#include <NeMALA/MessagePropertyTree.h>
++
++namespace ros_alate_interfaces {
++
++class LlcStatusMessage : public NeMALA::MessagePropertyTree
++{
++public:
++	typedef struct
++	{
++		double dLatitude;
++		double dLongitude;
++		double dAltitude;
++		double dYaw;
++		bool bArmed;
++		double dBatteryVoltage;
++		int nGpsFix;
++		double dGpsHdop;
++		std::string strMode;
++		std::string strState;
++	} LlcStateStruct;
++
++	LlcStatusMessage(LlcStateStruct &llcStateStruct): m_llcStateStruct(llcStateStruct) {}
++	LlcStatusMessage(NeMALA::Proptree pt)
++	{
++		m_llcStateStruct.dLatitude = pt.get<double>("Lat");
++		m_llcStateStruct.dLongitude = pt.get<double>("Lon");
++		m_llcStateStruct.dAltitude = pt.get<double>("Alt");
++		m_llcStateStruct.dYaw = pt.get<double>("Yaw");
++		m_llcStateStruct.bArmed = (1 == pt.get<int>("Armed"));
++		m_llcStateStruct.dBatteryVoltage = pt.get<double>("Volt");
++		m_llcStateStruct.nGpsFix = pt.get<int>("GpsFix");
++		m_llcStateStruct.dGpsHdop = pt.get<double>("GpsHdop");
++		m_llcStateStruct.strMode = pt.get<std::string>("Mode");
++		m_llcStateStruct.strState = pt.get<std::string>("State");
++	}
++	~LlcStatusMessage() {}
++
++	void BuildMessage()
++	{
++		AddElementNumber("Lat", m_llcStateStruct.dLatitude);
++		AddElementNumber("Lon", m_llcStateStruct.dLongitude);
++		AddElementNumber("Alt", m_llcStateStruct.dAltitude);
++		AddElementNumber("Yaw", m_llcStateStruct.dYaw);
++		AddElementNumber("Armed", m_llcStateStruct.bArmed ? 1 : 0);
++		AddElementNumber("Volt", m_llcStateStruct.dBatteryVoltage);
++		AddElementNumber("GpsFix", m_llcStateStruct.nGpsFix);
++		AddElementNumber("GpsHdop", m_llcStateStruct.dGpsHdop);
++		AddElementText("Mode", m_llcStateStruct.strMode);
++		AddElementText("State", m_llcStateStruct.strState);
++	}
++
++	LlcStateStruct GetLlcStatus() const {return m_llcStateStruct;}
++
++private:
++	LlcStateStruct m_llcStateStruct;
++};
++
++} // namespace ros_alate_interfaces
++
++#endif // _ROS_ALATE_INTERFACES_LLC_STATUS_MESSAGE_H_
+diff --git a/include/ros_alate_interfaces/ros_alate_interfaces/StringMessage.hpp b/include/ros_alate_interfaces/ros_alate_interfaces/StringMessage.hpp
+new file mode 100644
+index 0000000..fdb8f79
+--- /dev/null
++++ b/include/ros_alate_interfaces/ros_alate_interfaces/StringMessage.hpp
+@@ -0,0 +1,45 @@
++/*
++Copyright 2023 David Dovrat
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++#ifndef _ROS_ALATE_INTERFACES_STRING_MESSAGE_H_
++#define _ROS_ALATE_INTERFACES_STRING_MESSAGE_H_
++
++#include <NeMALA/MessagePropertyTree.h>
++
++namespace ros_alate_interfaces {
++
++class StringMessage : public NeMALA::MessagePropertyTree
++{
++public:
++	StringMessage(std::string str): m_str(str) {}
++	StringMessage(NeMALA::Proptree pt):
++		m_str(pt.get<std::string>("content")) {}
++	~StringMessage() {}
++
++	void BuildMessage()
++	{
++		AddElementText("content", m_str);
++	}
++
++	std::string GetContent() const {return m_str;}
++
++private:
++	std::string m_str;
++};
++
++} // namespace ros_alate_interfaces
++
++#endif // _ROS_ALATE_INTERFACES_STRING_MESSAGE_H_
+diff --git a/msg/HlcPlatformError.msg b/msg/HlcPlatformError.msg
+new file mode 100644
+index 0000000..cabc67a
+--- /dev/null
++++ b/msg/HlcPlatformError.msg
+@@ -0,0 +1 @@
++string error_text
+diff --git a/msg/HlcState.msg b/msg/HlcState.msg
+new file mode 100644
+index 0000000..16da5dd
+--- /dev/null
++++ b/msg/HlcState.msg
+@@ -0,0 +1,16 @@
++uint8 HLC_STATE_NONE=0
++uint8 HLC_STATE_INIT=1
++uint8 HLC_STATE_WAITING_FOR_MC=2
++uint8 HLC_STATE_WAITING_FOR_LLC=3
++uint8 HLC_STATE_READY=4
++uint8 HLC_STATE_TAKEOFF=5
++uint8 HLC_STATE_GAINING_ALTITUDE=6
++uint8 HLC_STATE_AIRBORNE=7
++uint8 HLC_STATE_LANDING=8
++uint8 HLC_STATE_MANUAL=9
++uint8 HLC_STATE_RETURN_TO_LAUNCH=10
++uint8 HLC_STATE_NO_ERROR=11
++uint8 HLC_STATE_LOW_BATTERY=12
++uint8 HLC_STATE_LLC_DOWN=13
++
++uint8 hlc_state_enum
+diff --git a/msg/HlcTelemetry.msg b/msg/HlcTelemetry.msg
+new file mode 100644
+index 0000000..a52aa63
+--- /dev/null
++++ b/msg/HlcTelemetry.msg
+@@ -0,0 +1,10 @@
++float64 latitude
++float64 longitude
++float64 altitude
++float64 yaw
++bool armed
++float64 battery_voltage
++uint8 gps_fix
++float64 gps_hdop
++string mode
++string state

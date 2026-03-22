@@ -1,0 +1,25 @@
+repositories:
+  external/alate:
+    type: git
+    url: https://gitlab.com/nemala/alate.git
+    version: 3fb6b242a59a789825260c9a9bc26a9ce134a5a1
+  external/nemala_core:
+    type: git
+    url: https://gitlab.com/nemala/core.git
+    version: f5002f50573ddcfa4d748bcc0becde22d9be7db5
+  ws/src/ros_alate:
+    type: git
+    url: https://github.com/MARS-Technion/ros_alate.git
+    version: 652db08738a29a5b126dee8b63bec1e63c1b7030
+  ws/src/ros_alate_interfaces:
+    type: git
+    url: https://github.com/MARS-Technion/ros_alate_interfaces.git
+    version: 76f8c7b822a49ccd294f5aff2855ef929f2ce119
+  ws/src/ros_nemala:
+    type: git
+    url: https://github.com/MARS-Technion/ros_nemala.git
+    version: 628c28c926c6c8abc24e0e88d82bd2591f5b9d15
+  ws/src/ros_nemala_interfaces:
+    type: git
+    url: https://github.com/MARS-Technion/ros_nemala_interfaces.git
+    version: acf9a2fb886242612dfe4b4bde44803b4e0cc5e8

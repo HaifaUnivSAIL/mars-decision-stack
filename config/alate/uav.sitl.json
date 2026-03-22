@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "operator_station_client": 1,
+    "mission_control": 2,
+    "high_level_control": 3,
+    "behavior1": 101,
+    "sensor1": 201,
+    "payload1": 301
+  },
+  "proxies": {
+    "uav": {
+      "subscribers": "ipc:///tmp/nemala/alate_subscribers",
+      "publishers": "ipc:///tmp/nemala/alate_publishers",
+      "logger": "ipc:///tmp/nemala/alate_log"
+    }
+  },
+  "topics": {
+    "operator_command": 101,
+    "mcm_state": 102,
+    "hlc_state": 103,
+    "velocity_command": 104,
+    "hlc_telemetry": 105,
+    "hlc_error": 106,
+    "direction_command": 107,
+    "operator_payload": 108,
+    "peers": 201,
+    "feedback": 202
+  },
+  "autopilot": {
+    "type": "dronekit",
+    "full_path_to_python": "/usr/bin/python3",
+    "master": "tcp:sitl:5760",
+    "baud": "921600",
+    "altitude": 10,
+    "low_bat_voltage": "11.1"
+  },
+  "behaviors": {},
+  "operator_station": {
+    "client_id": -1,
+    "server": "operator-station",
+    "port": "8000",
+    "allowed_timeouts": 1
+  },
+  "deploy": {
+    "sleep_for_sec": 0,
+    "working_directory": "/opt/alate"
+  }
+}

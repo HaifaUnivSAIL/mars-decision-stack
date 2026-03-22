@@ -1,0 +1,8 @@
+/decision_agent:
+  ros__parameters:
+    policy_type: heuristic
+    control_frequency_hz: 5.0
+    telemetry_timeout_sec: 2.0
+    require_ready_state: true
+    constant_linear_x: 0.0
+    constant_angular_z: 0.0

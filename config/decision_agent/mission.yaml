@@ -1,0 +1,4 @@
+/decision_agent:
+  ros__parameters:
+    mission_name: sitl_baseline
+    frame_id: map

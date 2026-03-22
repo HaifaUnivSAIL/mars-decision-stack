@@ -1,0 +1,24 @@
+# External source checkouts managed by vcs/bootstrap.
+/external/alate/
+/external/nemala_core/
+/ws/src/ros_alate/
+/ws/src/ros_alate_interfaces/
+/ws/src/ros_nemala/
+/ws/src/ros_nemala_interfaces/
+
+# ROS build artifacts.
+/ws/build/
+/ws/install/
+/ws/log/
+
+# Runtime artifacts.
+/logs/*
+!/logs/.gitkeep
+*.log
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Docker / local helper state.
+/.docker-cache/
