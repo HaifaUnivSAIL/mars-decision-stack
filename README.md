@@ -13,6 +13,8 @@ platform-specific deployment.
 - a reproducible Docker build for the integrated runtime and ROS workspace
 - a startup stack for single-UAV SITL bring-up with Alate mission control and
   high-level control
+- a Gazebo-based visual simulation path with chase and top-camera views for
+  operator-in-the-loop runtime testing
 - ROS 2 bridge topics for command ingress and runtime state, telemetry, and
   platform-error egress
 - a baseline `decision_agent` package for iterative autonomy and policy research
@@ -59,6 +61,7 @@ integration validation:
 
 - single-UAV bring-up
 - ArduCopter SITL
+- Gazebo visual simulation with keyboard-driven operator testing
 - Alate mission control and high-level control
 - ROS 2 Humble
 - decision-agent development inside a Docker-based workspace
@@ -101,6 +104,36 @@ integration validation:
 ```bash
 ./scripts/stop_stack.sh
 ```
+
+## Visual Simulation Workflow
+
+The repository also provides a GUI-backed visual runtime for operator-in-the-loop
+testing. This path launches the Gazebo-backed SITL stack, opens a desktop GUI,
+and exposes two rendered views:
+
+- `Chase Camera`: a trailing view that keeps the vehicle in frame
+- `Top Camera`: a rendered image from a camera mounted on the vehicle
+
+### Start the visual stack
+
+```bash
+./scripts/run_visual_stack.sh
+```
+
+### Validate the visual stack
+
+```bash
+./scripts/validate_visual_stack.sh
+```
+
+### Run keyboard control against the visual stack
+
+```bash
+./scripts/run_visual_manual_runtime_test.sh
+```
+
+This workflow uses the same ROS command interface as local decision modules, so
+manual testing and algorithm development stay aligned at the interface boundary.
 
 ## ROS Interface Contract
 
@@ -259,6 +292,7 @@ It checks:
 
 ## Additional Documentation
 
+- [`docs/manual_runtime_test.md`](docs/manual_runtime_test.md)
 - [`docs/stack_modularity.md`](docs/stack_modularity.md)
 - [`docs/integration_architecture.md`](docs/integration_architecture.md)
 - [`docs/topic_mapping.md`](docs/topic_mapping.md)

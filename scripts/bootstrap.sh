@@ -36,6 +36,7 @@ apply_if_needed() {
 }
 
 apply_if_needed "${ALATE_DIR}" "${PATCH_DIR}/alate-local.patch"
+apply_if_needed "${EXTERNAL_DIR}/ardupilot_gazebo" "${PATCH_DIR}/ardupilot_gazebo-visual.patch"
 apply_if_needed "${WS_SRC_DIR}/ros_alate_interfaces" "${PATCH_DIR}/ros_alate_interfaces.patch"
 apply_if_needed "${WS_SRC_DIR}/ros_alate" "${PATCH_DIR}/ros_alate.patch"
 

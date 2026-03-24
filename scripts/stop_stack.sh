@@ -11,6 +11,7 @@ containers=(
   "${STACK_NAME}-mc"
   "${STACK_NAME}-logger"
   "${STACK_NAME}-proxy"
+  "${STACK_NAME}-visual-sim"
   "${STACK_NAME}-sitl"
 )
 

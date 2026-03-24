@@ -1,5 +1,6 @@
 # External source checkouts managed by vcs/bootstrap.
 /external/alate/
+/external/ardupilot_gazebo/
 /external/nemala_core/
 /ws/src/ros_alate/
 /ws/src/ros_alate_interfaces/

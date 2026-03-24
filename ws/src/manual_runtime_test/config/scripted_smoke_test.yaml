@@ -1,0 +1,16 @@
+/manual_runtime_test:
+  ros__parameters:
+    linear_step_x: 0.3
+    linear_step_z: 0.2
+    publish_rate_hz: 10.0
+    motion_hold_sec: 1.0
+    telemetry_timeout_sec: 5.0
+    require_ready_state_for_takeoff: false
+    status_period_sec: 0.5
+    scripted_action_interval_sec: 0.2
+    scripted_actions:
+      - wait:2.0
+      - forward
+      - wait:0.5
+      - stop
+      - quit

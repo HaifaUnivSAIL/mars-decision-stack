@@ -3,6 +3,10 @@ repositories:
     type: git
     url: https://gitlab.com/nemala/alate.git
     version: 3fb6b242a59a789825260c9a9bc26a9ce134a5a1
+  external/ardupilot_gazebo:
+    type: git
+    url: https://github.com/ArduPilot/ardupilot_gazebo.git
+    version: 65937b77aace16735df6f192badb0e6b4eddd056
   external/nemala_core:
     type: git
     url: https://gitlab.com/nemala/core.git
