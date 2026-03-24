@@ -13,8 +13,8 @@ platform-specific deployment.
 - a reproducible Docker build for the integrated runtime and ROS workspace
 - a startup stack for single-UAV SITL bring-up with Alate mission control and
   high-level control
-- a Gazebo-based visual simulation path with chase and top-camera views for
-  operator-in-the-loop runtime testing
+- a Gazebo-based visual simulation path with chase and deployed-camera views
+  for operator-in-the-loop runtime testing
 - ROS 2 bridge topics for command ingress and runtime state, telemetry, and
   platform-error egress
 - a baseline `decision_agent` package for iterative autonomy and policy research
@@ -112,7 +112,10 @@ testing. This path launches the Gazebo-backed SITL stack, opens a desktop GUI,
 and exposes two rendered views:
 
 - `Chase Camera`: a trailing view that keeps the vehicle in frame
-- `Top Camera`: a rendered image from a camera mounted on the vehicle
+- `Deployed Camera`: a rendered image from a front-bottom camera mounted on the vehicle
+
+The visual GUI also exposes `Camera Gimbal Controls`, which drive the deployed
+camera roll, pitch, and yaw from a neutral `0, 0, 0` orientation.
 
 ### Start the visual stack
 

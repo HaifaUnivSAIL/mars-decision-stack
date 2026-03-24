@@ -56,7 +56,10 @@ docker exec \
   "${STACK_NAME}-visual-sim" \
   bash -lc 'timeout 10 gz topic -l' >"${visual_topics}"
 grep -Fxq '/mars/visual/chase_camera' "${visual_topics}"
-grep -Fxq '/mars/visual/top_camera' "${visual_topics}"
+grep -Fxq '/mars/visual/deployed_camera' "${visual_topics}"
+grep -Fxq '/model/iris_with_gimbal/joint/gimbal::roll_joint/0/cmd_pos' "${visual_topics}"
+grep -Fxq '/model/iris_with_gimbal/joint/gimbal::pitch_joint/0/cmd_pos' "${visual_topics}"
+grep -Fxq '/model/iris_with_gimbal/joint/gimbal::yaw_joint/0/cmd_pos' "${visual_topics}"
 
 docker exec "${STACK_NAME}-decision-dev" bash -lc 'source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && timeout 12 ros2 run manual_runtime_test keyboard_teleop --ros-args --params-file /workspace/config/manual_runtime_test/scripted_smoke_test.yaml' >"${manual_log}" 2>&1 || true
 grep -q 'Published motion command forward' "${manual_log}"

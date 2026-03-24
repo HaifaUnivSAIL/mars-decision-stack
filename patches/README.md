@@ -8,8 +8,9 @@ Some required integration work is not available upstream yet, so
 `vcs import` completes:
 
 - `alate-local.patch`: local runtime fixes kept on top of upstream `alate`
-- `ardupilot_gazebo-visual.patch`: adds the chase and top-mounted camera
-  sensors used by the visual simulation path
+- `ardupilot_gazebo-visual.patch`: adds the chase camera, the front-bottom
+  deployed camera, and the GUI-controllable gimbal mount used by the visual
+  simulation path
 - `ros_alate_interfaces.patch`: added bridge output message types
 - `ros_alate.patch`: completed the ROS output bridge for Alate state, telemetry,
   and platform errors

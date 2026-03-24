@@ -20,7 +20,8 @@ This workflow is intended for:
 The recommended workflow uses the Gazebo-backed visual stack:
 
 - a chase-camera rendered view that keeps the vehicle in frame
-- a top-mounted rendered camera view from the vehicle itself
+- a front-bottom deployed camera rendered from the vehicle itself
+- a GUI gimbal-control panel for roll, pitch, and yaw
 - the same ROS and NeMALA runtime used by decision modules
 - keyboard control through the `manual_runtime_test` package
 
@@ -67,7 +68,12 @@ The script:
 1. starts the Gazebo-backed visual stack if it is not already running
 2. waits for HLC and MC readiness
 3. launches the keyboard teleoperation node in the development container
-4. keeps the chase and top-camera views available in Gazebo while commands are issued
+4. keeps the chase and deployed-camera views available in Gazebo while commands are issued
+5. exposes `Camera Gimbal Controls` in Gazebo for interactive roll, pitch, and yaw adjustment
+
+The deployed camera is mounted at the front-bottom of the vehicle. The gimbal
+starts at a neutral roll, pitch, and yaw of `0, 0, 0`, and the GUI controls
+command those three rotation axes directly.
 
 ## Validate the Visual Stack
 
@@ -79,7 +85,8 @@ This validator checks:
 
 - visual stack bring-up
 - HLC and MC readiness
-- availability of `/mars/visual/chase_camera` and `/mars/visual/top_camera`
+- availability of `/mars/visual/chase_camera` and `/mars/visual/deployed_camera`
+- availability of the native Gazebo gimbal position topics for roll, pitch, and yaw
 - scripted teleoperation command publication against the visual runtime
 
 ## Run the Headless Interactive Test
