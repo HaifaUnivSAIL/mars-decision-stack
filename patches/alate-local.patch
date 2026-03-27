@@ -1,5 +1,5 @@
 diff --git a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
-index 52a5b91..4211c25 100644
+index 52a5b91..6d8033b 100644
 --- a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 +++ b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 @@ -6,9 +6,15 @@
@@ -18,6 +18,177 @@ index 52a5b91..4211c25 100644
  from dronekit import connect, VehicleMode, mavutil
  
  if __name__ == "__main__":
+@@ -27,19 +33,30 @@ class AutopilotDronekit(AbstractAutopilot):
+         The AutopilotDronekit class is an abstraction of a dronekit autopilot
+     """
+ 
+-    def __init__(self, target_address, baud_rate):
++    def __init__(self, target_address, baud_rate, force_arm=False):
+         """
+         Establish connection to the autopilot
+         """
+         super(AutopilotDronekit, self).__init__()
+         # A lock for guarding the vehicle since it handles its own connection
+         self._lock = threading.Lock()
++        self._force_arm = bool(force_arm)
++        print(f"AutopilotDronekit connecting to target_address={target_address} baud_rate={baud_rate} force_arm={self._force_arm}")
+         connected = False
+         time_start = time.time()
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+         while not connected:
+             try:
+-                self._Vehicle = connect(target_address, baud=baud_rate, wait_ready=True)
++                # Gazebo-backed SITL can stream MAVLink before all attributes are fully ready.
++                # Avoid DroneKit's blocking wait_ready path here; it has proven brittle in the
++                # visual stack and can abort even while heartbeats continue to arrive.
++                self._Vehicle = connect(
++                    target_address,
++                    baud=baud_rate,
++                    wait_ready=False,
++                    heartbeat_timeout=30,
++                    timeout=60,
++                )
+                 connected = True
+             except:
+                 print(sys.exc_info()[0])
+@@ -50,6 +67,7 @@ class AutopilotDronekit(AbstractAutopilot):
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+         if not connected:
+             raise RuntimeError("AutopilotDronekit.py failed to establish Vehicle Communication.")
++        print("AutopilotDronekit connection established")
+ 
+     ###################################################################################
+     # ----------------------- AbstractAutopilot Interface Methods --------------------#
+@@ -62,31 +80,48 @@ class AutopilotDronekit(AbstractAutopilot):
+         super(AutopilotDronekit, self).shutdown()
+ 
+     def ready2takeoff(self):
++        print("AutopilotDronekit ready2takeoff: setting mode GUIDED")
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+         self._Vehicle.mode = VehicleMode("GUIDED")
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def arm(self):
++        print(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+-        self._Vehicle.armed = True
++        if self._force_arm:
++            msg = self._Vehicle.message_factory.command_long_encode(
++                0, 0,
++                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
++                0,
++                1,      # arm
++                21196,  # force arm/disarm magic value
++                0, 0, 0, 0, 0,
++            )
++            self._Vehicle.send_mavlink(msg)
++        else:
++            self._Vehicle.armed = True
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def takeoff(self, dAltitude):
++        print(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+         self._Vehicle.simple_takeoff(dAltitude)
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def land(self):
++        print("AutopilotDronekit land requested")
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+         self._Vehicle.mode = VehicleMode("LAND")
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def rtl(self):
++        print("AutopilotDronekit rtl requested")
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+         self._Vehicle.mode = VehicleMode("RTL")
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def set_velocity_body_frame(self, forward, right, down):
++        print(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
+         # print(dForward)
+         msg = self._Vehicle.message_factory.set_position_target_local_ned_encode(
+             0,  # time_boot_ms (not used)
+@@ -102,6 +137,7 @@ class AutopilotDronekit(AbstractAutopilot):
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
+ 
+     def set_yaw_rate(self, deg_per_sec):
++        print(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
+         # print(dDegPerSec)
+         rotation_direction = 1
+         if (0 > deg_per_sec):
+@@ -122,25 +158,43 @@ class AutopilotDronekit(AbstractAutopilot):
+ 
+     def print_status(self):
+         self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
+-        self._status['mode'] = self._Vehicle.mode.name
+-        self._status['armed'] = self._Vehicle.armed
+-        battery_voltage = self._Vehicle.battery.voltage
++        mode = getattr(self._Vehicle, "mode", None)
++        self._status['mode'] = getattr(mode, "name", "")
++        self._status['armed'] = bool(getattr(self._Vehicle, "armed", False))
++
++        battery = getattr(self._Vehicle, "battery", None)
++        battery_voltage = getattr(battery, "voltage", None)
+         if (None == battery_voltage):
+             battery_voltage = 0
+         self._status['battery_voltage'] = battery_voltage
+-        gps_hdop = self._Vehicle.gps_0.eph
+-        gps_fix = self._Vehicle.gps_0.fix_type
++
++        gps = getattr(self._Vehicle, "gps_0", None)
++        gps_hdop = getattr(gps, "eph", None)
++        gps_fix = getattr(gps, "fix_type", 0) or 0
+         self._status['gps_fix'] = gps_fix
+         if (None == gps_hdop):
+             gps_hdop = 9898
+         self._status['gps_hdop'] = gps_hdop
+-        self._status['armable'] = self._Vehicle.is_armable
+-        self._status['altitude'] = self._Vehicle.location.global_relative_frame.alt
+-        self._status['lat'] = self._Vehicle.location.global_relative_frame.lat
+-        self._status['lon'] = self._Vehicle.location.global_relative_frame.lon
+-        self._status['yaw'] = self._Vehicle.attitude.yaw
+-        self._status['state'] = self._Vehicle.system_status.state
++        self._status['armable'] = bool(getattr(self._Vehicle, "is_armable", False))
++
++        location = getattr(self._Vehicle, "location", None)
++        global_relative_frame = getattr(location, "global_relative_frame", None)
++        self._status['altitude'] = getattr(global_relative_frame, "alt", 0) or 0
++        self._status['lat'] = getattr(global_relative_frame, "lat", 0) or 0
++        self._status['lon'] = getattr(global_relative_frame, "lon", 0) or 0
++
++        attitude = getattr(self._Vehicle, "attitude", None)
++        self._status['yaw'] = getattr(attitude, "yaw", 0) or 0
++
++        system_status = getattr(self._Vehicle, "system_status", None)
++        self._status['state'] = getattr(system_status, "state", "")
+         self._lock.release()  # ---------------------------------- Release ------------------------------------
++        print(
++            "AutopilotDronekit status "
++            f"mode={self._status['mode']} armed={self._status['armed']} "
++            f"altitude={self._status['altitude']} gps_fix={self._status['gps_fix']} "
++            f"armable={self._status['armable']} state={self._status['state']}"
++        )
+         return super(AutopilotDronekit, self).print_status()
+ 
+ ###################################################################################
+diff --git a/src/HighLevelControl/AutoPilots/AutopilotFactory.py b/src/HighLevelControl/AutoPilots/AutopilotFactory.py
+index 63c9b8e..debec20 100644
+--- a/src/HighLevelControl/AutoPilots/AutopilotFactory.py
++++ b/src/HighLevelControl/AutoPilots/AutopilotFactory.py
+@@ -44,7 +44,11 @@ class AutopilotFactory(object):
+         if ('tello' == dict_config['type']):
+             return AutopilotTello.AutopilotTello(dict_config["network interface"], ('true' == dict_config["enable_camera"]))
+         elif ('dronekit' == dict_config['type']):
+-            return AutopilotDronekit.AutopilotDronekit(dict_config["master"], dict_config["baud"])
++            return AutopilotDronekit.AutopilotDronekit(
++                dict_config["master"],
++                dict_config["baud"],
++                dict_config.get("force_arm", False),
++            )
+         else:
+             raise KeyError(dict_config)
+ 
 diff --git a/src/HighLevelControl/AutoPilots/requirements.txt b/src/HighLevelControl/AutoPilots/requirements.txt
 index 87b5cfb..4d8a154 100644
 --- a/src/HighLevelControl/AutoPilots/requirements.txt
@@ -27,3 +198,149 @@ index 87b5cfb..4d8a154 100644
  dronekit-sitl
 +future
  pyserial
+diff --git a/src/HighLevelControl/Autopilot.cpp b/src/HighLevelControl/Autopilot.cpp
+index 1f65118..255e8a2 100644
+--- a/src/HighLevelControl/Autopilot.cpp
++++ b/src/HighLevelControl/Autopilot.cpp
+@@ -29,6 +29,10 @@ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher*
+ 	m_dTargetAltitude = ptArgs.get<double>("altitude");
+ 	m_dLowBatVoltage = ptArgs.get<double>("low_bat_voltage");
+ 	m_strExecutable = "run_autopilot.py";
++	std::cout << AlateUtils::GetTimeString()
++		<< "Autopilot config loaded: python=" << m_pathPythonExecutable.string()
++		<< " altitude=" << m_dTargetAltitude
++		<< " low_bat_voltage=" << m_dLowBatVoltage << std::endl;
+ 
+ 	m_pThreadWriteToLlc = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
+ 	m_pThreadReadFromLlcErr  = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
+@@ -115,7 +119,9 @@ int Autopilot::operator()()
+ 
+ 	try
+ 	{
+-		pProcessPython = new boost::process::child(m_pathPythonExecutable,"-i",
++		std::cout << AlateUtils::GetTimeString() << "Autopilot: launching "
++			<< m_strExecutable << " with args " << m_strArgs << std::endl;
++		pProcessPython = new boost::process::child(m_pathPythonExecutable,
+ 				m_strExecutable,
+ 				m_strArgs,
+ 				boost::process::std_out > _ipstream,
+@@ -269,6 +275,7 @@ void Autopilot::SetYawRate(double dDegPerSec)
+ 
+ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction)
+ {
++	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting state command " << eAction << std::endl;
+ 	m_opstream << m_strToken << eAction << std::endl;
+ }
+ 
+@@ -276,6 +283,7 @@ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction
+ 
+ void Autopilot::PostTakeoff()
+ {
++	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting takeoff command altitude=" << m_dTargetAltitude << std::endl;
+ 	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionTakeoff << " " << m_dTargetAltitude << std::endl;
+ }
+ 
+@@ -283,6 +291,8 @@ void Autopilot::PostTakeoff()
+ 
+ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDown)
+ {
++	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting velocity command forward="
++		<< dForward << " right=" << dRight << " down=" << dDown << std::endl;
+ 	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionVelocityBodyFrame << " " << dForward << " " << dRight << " " << dDown << std::endl;
+ }
+ 
+@@ -290,6 +300,7 @@ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDo
+ 
+ void Autopilot::PostYawRate(double dDegPerSec)
+ {
++	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting yaw-rate command deg_per_sec=" << dDegPerSec << std::endl;
+ 	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionYawRate << " " << dDegPerSec << std::endl;
+ }
+ 
+diff --git a/src/HighLevelControl/HighLevelControl.cpp b/src/HighLevelControl/HighLevelControl.cpp
+index dca2b20..4ff32e3 100644
+--- a/src/HighLevelControl/HighLevelControl.cpp
++++ b/src/HighLevelControl/HighLevelControl.cpp
+@@ -54,6 +54,8 @@ int main (int argc, char *argv[])
+ 		try
+ 		{
+ 			boost::property_tree::read_json(argv[2],pt);
++			std::cout << "HLC config loaded from " << argv[2]
++				<< " using proxy namespace " << strProxyName << std::endl;
+ 		}
+ 		catch (std::exception& e)
+ 		{
+@@ -91,6 +93,10 @@ int main (int argc, char *argv[])
+ 		unsigned int unTopicNumberState(pt.get<unsigned int>("topics.hlc_state"));
+ 		unsigned int unTopicNumberStatus(pt.get<unsigned int>("topics.hlc_telemetry"));
+ 		unsigned int unTopicNumberErrMsg(pt.get<unsigned int>("topics.hlc_error"));
++		std::cout << "HLC publishers: endpoint=" << strEndPoint
++			<< " state_topic=" << unTopicNumberState
++			<< " telemetry_topic=" << unTopicNumberStatus
++			<< " error_topic=" << unTopicNumberErrMsg << std::endl;
+ 
+ 		try
+ 		{
+@@ -119,6 +125,10 @@ int main (int argc, char *argv[])
+ 		try
+ 		{
+ 			pAutoPilot = new Autopilot(pLlcStatusPublisher, pLlcErrorPublisher, pt.get_child("autopilot"));
++			std::cout << "HLC autopilot config: type=" << pt.get<std::string>("autopilot.type")
++				<< " master=" << pt.get<std::string>("autopilot.master")
++				<< " altitude=" << pt.get<double>("autopilot.altitude")
++				<< " force_arm=" << pt.get("autopilot.force_arm", false) << std::endl;
+ 		}
+ 		catch (std::exception& e)
+ 		{
+diff --git a/src/HighLevelControl/HlcStateMachine.h b/src/HighLevelControl/HlcStateMachine.h
+index ac8d9de..06703d2 100644
+--- a/src/HighLevelControl/HlcStateMachine.h
++++ b/src/HighLevelControl/HlcStateMachine.h
+@@ -262,7 +262,10 @@ private:
+ 			void on_entry(Event const& ev,FSM& fsm)
+ 			{
+ 				HlcState::on_entry(ev,fsm);
+-				fsm.SetTimer(3000);
++				// Gazebo-backed SITL can take several seconds to complete arming after a
++				// valid takeoff request. Keep the arm phase alive long enough to receive
++				// the armed transition before falling back to Ready.
++				fsm.SetTimer(10000);
+ 				fsm.GetAutoPilot()->Arm();
+ 			}
+ 
+@@ -280,8 +283,9 @@ private:
+ 			void on_entry(Event const& ev,FSM& fsm)
+ 			{
+ 				HlcState::on_entry(ev,fsm);
+-				// A second for each meter, + 5 seconds to think about it.
+-				fsm.SetTimer(fsm.GetAutoPilot()->GetTakeoffAltitude() * 1000 + 5000);
++				// Gazebo-backed SITL climbs more slowly than the legacy timeout budget.
++				// Give takeoff enough time to reach a stable airborne state before forcing landing.
++				fsm.SetTimer(fsm.GetAutoPilot()->GetTakeoffAltitude() * 3000 + 5000);
+ 				fsm.GetAutoPilot()->Takeoff();
+ 			}
+ 		};
+diff --git a/src/MissionControl/MissionControl.cpp b/src/MissionControl/MissionControl.cpp
+index 09cac67..712aeaa 100644
+--- a/src/MissionControl/MissionControl.cpp
++++ b/src/MissionControl/MissionControl.cpp
+@@ -46,6 +46,8 @@ int main (int argc, char *argv[])
+ 		try
+ 		{
+ 			boost::property_tree::read_json(argv[2],pt);
++			std::cout << "MissionControl config loaded from " << argv[2]
++				<< " using proxy namespace " << strProxyName << std::endl;
+ 		}
+ 		catch (std::exception& e)
+ 		{
+@@ -81,6 +83,10 @@ int main (int argc, char *argv[])
+ 
+ 		std::string strEndPoint(pt.get<std::string>(strProxyName + ".publishers"));
+ 		unsigned int unTopicNumber(pt.get<unsigned int>("topics.mcm_state"));
++		std::cout << "MissionControl publisher: endpoint=" << strEndPoint
++			<< " state_topic=" << unTopicNumber
++			<< " operator_command_topic=" << pt.get<unsigned int>("topics.operator_command")
++			<< " hlc_state_topic=" << pt.get<unsigned int>("topics.hlc_state") << std::endl;
+ 
+ 		try
+ 		{

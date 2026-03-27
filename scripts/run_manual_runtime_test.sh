@@ -35,7 +35,7 @@ fi
 wait_for_runtime_ready 60
 
 printf 'Vehicle is already spawned by SITL. Use keyboard control to issue commands.\n'
-printf 'Controls: t=takeoff l=land g=gohome w=forward s=back r=up f=down space=stop h=help q=quit\n'
+printf 'Controls: t=takeoff l=land g=gohome w=forward a=left s=back d=right r=up f=down space=stop h=help q=quit\n'
 printf 'This runtime test is headless. No GUI or simulator window is launched by the current stack.\n'
 
 docker exec -it "${STACK_NAME}-decision-dev" bash -lc '

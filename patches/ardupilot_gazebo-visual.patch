@@ -1,34 +1,46 @@
-diff --git a/models/gimbal_small_3d/model.sdf b/models/gimbal_small_3d/model.sdf
-index f2dbf36..99d06e1 100644
---- a/models/gimbal_small_3d/model.sdf
-+++ b/models/gimbal_small_3d/model.sdf
-@@ -190,6 +190,7 @@
-       </collision>
-       <sensor name="camera" type="camera">
-         <gz_frame_id>pitch_link</gz_frame_id>
-+        <topic>/mars/visual/deployed_camera</topic>
-         <pose>0 0 0 -1.57 -1.57 0</pose>
-         <camera>
-           <horizontal_fov>2.0</horizontal_fov>
-diff --git a/models/iris_with_gimbal/model.sdf b/models/iris_with_gimbal/model.sdf
-index dae756d..2d68790 100755
---- a/models/iris_with_gimbal/model.sdf
-+++ b/models/iris_with_gimbal/model.sdf
-@@ -8,7 +8,7 @@
-     <include>
-       <uri>model://gimbal_small_3d</uri>
-       <name>gimbal</name>
--      <pose degrees="true">0 -0.01 -0.124923 90 0 90</pose>    
-+      <pose degrees="true">0.09 0 -0.124923 90 0 90</pose>
-     </include>
- 
-     <joint name="gimbal_joint" type="revolute">
-@@ -23,6 +23,106 @@
-       </axis>
-     </joint>
- 
-+    <link name="top_camera_link">
-+      <pose degrees="true">0.03 0 0.15 0 -12 0</pose>
+diff --git a/models/iris_with_camera_calibration/model.config b/models/iris_with_camera_calibration/model.config
+new file mode 100755
+index 0000000..187a827
+--- /dev/null
++++ b/models/iris_with_camera_calibration/model.config
+@@ -0,0 +1,23 @@
++<?xml version="1.0"?>
++
++<model>
++  <name>Iris with Camera Calibration</name>
++  <version>1.0</version>
++  <sdf version="1.9">model.sdf</sdf>
++
++  <author>
++    <name>MARS Decision Stack</name>
++  </author>
++
++  <description>
++    Iris quadrotor with a rigid front-bottom deployed camera calibration rig.
++    The visible payload is a fixed camera pod, while invisible helper joints
++    expose 6-DOF tuning controls for calibration only.
++  </description>
++  <depend>
++    <model>
++      <uri>model://iris_with_standoffs</uri>
++      <version>2.0</version>
++    </model>
++  </depend>
++</model>
+diff --git a/models/iris_with_camera_calibration/model.sdf b/models/iris_with_camera_calibration/model.sdf
+new file mode 100644
+index 0000000..b3519ac
+--- /dev/null
++++ b/models/iris_with_camera_calibration/model.sdf
+@@ -0,0 +1,701 @@
++<?xml version='1.0'?>
++<sdf version="1.9">
++  <model name="iris_with_camera_calibration">
++    <include>
++      <uri>model://iris_with_standoffs</uri>
++    </include>
++
++    <link name="deployed_camera_default_translation_link">
 +      <inertial>
 +        <mass>0.001</mass>
 +        <inertia>
@@ -40,41 +52,348 @@ index dae756d..2d68790 100755
 +          <izz>1e-06</izz>
 +        </inertia>
 +      </inertial>
-+      <visual name="top_camera_visual">
++    </link>
++
++    <joint name="deployed_camera_mount_joint" type="fixed">
++      <parent>iris_with_standoffs::base_link</parent>
++      <child>deployed_camera_default_translation_link</child>
++      <pose>0 0 0 0 0 0</pose>
++    </joint>
++
++    <link name="deployed_camera_x_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_x_joint" type="prismatic">
++      <parent>deployed_camera_default_translation_link</parent>
++      <child>deployed_camera_x_link</child>
++      <axis>
++        <xyz>1 0 0</xyz>
++        <dynamics>
++          <damping>0.05</damping>
++        </dynamics>
++        <limit>
++          <lower>-0.10</lower>
++          <upper>0.35</upper>
++          <effort>25</effort>
++          <velocity>1.0</velocity>
++        </limit>
++      </axis>
++    </joint>
++
++    <link name="deployed_camera_y_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_y_joint" type="prismatic">
++      <parent>deployed_camera_x_link</parent>
++      <child>deployed_camera_y_link</child>
++      <axis>
++        <xyz>0 1 0</xyz>
++        <dynamics>
++          <damping>0.05</damping>
++        </dynamics>
++        <limit>
++          <lower>-0.20</lower>
++          <upper>0.20</upper>
++          <effort>25</effort>
++          <velocity>1.0</velocity>
++        </limit>
++      </axis>
++    </joint>
++
++    <link name="deployed_camera_z_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_z_joint" type="prismatic">
++      <parent>deployed_camera_y_link</parent>
++      <child>deployed_camera_z_link</child>
++      <axis>
++        <xyz>0 0 1</xyz>
++        <dynamics>
++          <damping>0.05</damping>
++        </dynamics>
++        <limit>
++          <lower>-0.35</lower>
++          <upper>0.10</upper>
++          <effort>25</effort>
++          <velocity>1.0</velocity>
++        </limit>
++      </axis>
++    </joint>
++
++    <link name="deployed_camera_mount_frame_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_mount_frame_joint" type="fixed">
++      <parent>deployed_camera_z_link</parent>
++      <child>deployed_camera_mount_frame_link</child>
++      <pose>0 0 0 0 0 0</pose>
++    </joint>
++
++    <link name="deployed_camera_default_orientation_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_default_orientation_joint" type="fixed">
++      <parent>deployed_camera_mount_frame_link</parent>
++      <child>deployed_camera_default_orientation_link</child>
++      <pose>0 0 0 0 0 0</pose>
++    </joint>
++
++    <link name="deployed_camera_yaw_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_yaw_joint" type="revolute">
++      <parent>deployed_camera_default_orientation_link</parent>
++      <child>deployed_camera_yaw_link</child>
++      <axis>
++        <xyz>0 0 1</xyz>
++        <dynamics>
++          <damping>0.02</damping>
++        </dynamics>
++        <limit>
++          <lower>-3.1415926</lower>
++          <upper>3.1415926</upper>
++        </limit>
++      </axis>
++    </joint>
++
++    <link name="deployed_camera_pitch_link">
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <joint name="deployed_camera_pitch_joint" type="revolute">
++      <parent>deployed_camera_yaw_link</parent>
++      <child>deployed_camera_pitch_link</child>
++      <axis>
++        <xyz>0 1 0</xyz>
++        <dynamics>
++          <damping>0.02</damping>
++        </dynamics>
++        <limit>
++          <lower>-3.1415926</lower>
++          <upper>3.1415926</upper>
++        </limit>
++      </axis>
++    </joint>
++
++    <link name="deployed_camera_rigid_mount_link">
++      <gravity>false</gravity>
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++    </link>
++
++    <link name="deployed_camera_pod_link">
++      <gravity>false</gravity>
++      <inertial>
++        <mass>0.08</mass>
++        <inertia>
++          <ixx>0.00005</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>0.00008</iyy>
++          <iyz>0</iyz>
++          <izz>0.00008</izz>
++        </inertia>
++      </inertial>
++      <visual name="mount_bracket_visual">
++        <pose>-0.020 0 0.028 0 0 0</pose>
 +        <geometry>
 +          <box>
-+            <size>0.05 0.04 0.03</size>
++            <size>0.050 0.040 0.006</size>
 +          </box>
 +        </geometry>
 +        <material>
 +          <ambient>0.10 0.10 0.10 1</ambient>
 +          <diffuse>0.10 0.10 0.10 1</diffuse>
++          <specular>0.03 0.03 0.03 1</specular>
 +        </material>
 +      </visual>
-+      <sensor name="top_camera" type="camera">
-+        <gz_frame_id>top_camera_link</gz_frame_id>
-+        <topic>/mars/visual/top_camera</topic>
-+        <always_on>1</always_on>
-+        <update_rate>30</update_rate>
-+        <visualize>true</visualize>
++      <visual name="camera_body_visual">
++        <pose>-0.030 0 0 0 0 0</pose>
++        <geometry>
++          <box>
++            <size>0.080 0.060 0.050</size>
++          </box>
++        </geometry>
++        <material>
++          <ambient>0.18 0.18 0.18 1</ambient>
++          <diffuse>0.18 0.18 0.18 1</diffuse>
++          <specular>0.05 0.05 0.05 1</specular>
++        </material>
++      </visual>
++      <visual name="lens_visual">
++        <pose>0.018 0 0 0 1.57079632679 0</pose>
++        <geometry>
++          <cylinder>
++            <radius>0.018</radius>
++            <length>0.020</length>
++          </cylinder>
++        </geometry>
++        <material>
++          <ambient>0.03 0.03 0.03 1</ambient>
++          <diffuse>0.03 0.03 0.03 1</diffuse>
++          <specular>0.20 0.20 0.20 1</specular>
++        </material>
++      </visual>
++    </link>
++
++    <joint name="deployed_camera_roll_joint" type="revolute">
++      <parent>deployed_camera_pitch_link</parent>
++      <child>deployed_camera_rigid_mount_link</child>
++      <axis>
++        <xyz>1 0 0</xyz>
++        <dynamics>
++          <damping>0.02</damping>
++        </dynamics>
++        <limit>
++          <lower>-3.1415926</lower>
++          <upper>3.1415926</upper>
++        </limit>
++      </axis>
++    </joint>
++
++    <joint name="deployed_camera_pod_joint" type="fixed">
++      <parent>deployed_camera_rigid_mount_link</parent>
++      <child>deployed_camera_pod_link</child>
++      <pose>0 0 0 0 0 0</pose>
++    </joint>
++
++    <link name="deployed_camera_optical_link">
++      <gravity>false</gravity>
++      <inertial>
++        <mass>0.001</mass>
++        <inertia>
++          <ixx>1e-06</ixx>
++          <ixy>0</ixy>
++          <ixz>0</ixz>
++          <iyy>1e-06</iyy>
++          <iyz>0</iyz>
++          <izz>1e-06</izz>
++        </inertia>
++      </inertial>
++      <sensor name="camera" type="camera">
++        <gz_frame_id>deployed_camera_optical_link</gz_frame_id>
++        <topic>/mars/visual/deployed_camera</topic>
++        <pose>0 0 0 0 0 0</pose>
 +        <camera>
-+          <horizontal_fov>1.3962634</horizontal_fov>
++          <horizontal_fov>2.0</horizontal_fov>
 +          <image>
-+            <width>1280</width>
-+            <height>720</height>
-+            <format>R8G8B8</format>
++            <width>640</width>
++            <height>480</height>
 +          </image>
 +          <clip>
 +            <near>0.05</near>
-+            <far>500</far>
++            <far>15000</far>
 +          </clip>
 +        </camera>
++        <always_on>1</always_on>
++        <update_rate>10</update_rate>
++        <visualize>1</visualize>
++
++        <plugin filename="CameraZoomPlugin"
++            name="CameraZoomPlugin">
++          <max_zoom>125.0</max_zoom>
++          <slew_rate>0.42514285714</slew_rate>
++        </plugin>
++
++        <plugin name="GstCameraPlugin"
++            filename="GstCameraPlugin">
++          <udp_host>127.0.0.1</udp_host>
++          <udp_port>5600</udp_port>
++          <use_basic_pipeline>true</use_basic_pipeline>
++          <use_cuda>false</use_cuda>
++        </plugin>
 +      </sensor>
 +    </link>
 +
-+    <joint name="top_camera_joint" type="fixed">
-+      <parent>iris_with_standoffs::base_link</parent>
-+      <child>top_camera_link</child>
++    <joint name="deployed_camera_optical_joint" type="fixed">
++      <parent>deployed_camera_pod_link</parent>
++      <child>deployed_camera_optical_link</child>
++      <pose>0 0 0 0 0 0</pose>
 +    </joint>
 +
 +    <link name="chase_camera_link">
@@ -90,23 +409,12 @@ index dae756d..2d68790 100755
 +          <izz>1e-06</izz>
 +        </inertia>
 +      </inertial>
-+      <visual name="chase_camera_visual">
-+        <geometry>
-+          <box>
-+            <size>0.07 0.05 0.05</size>
-+          </box>
-+        </geometry>
-+        <material>
-+          <ambient>0.05 0.05 0.05 1</ambient>
-+          <diffuse>0.05 0.05 0.05 1</diffuse>
-+        </material>
-+      </visual>
 +      <sensor name="chase_camera" type="camera">
 +        <gz_frame_id>chase_camera_link</gz_frame_id>
 +        <topic>/mars/visual/chase_camera</topic>
 +        <always_on>1</always_on>
 +        <update_rate>30</update_rate>
-+        <visualize>true</visualize>
++        <visualize>false</visualize>
 +        <camera>
 +          <horizontal_fov>1.2217305</horizontal_fov>
 +          <image>
@@ -127,37 +435,704 @@ index dae756d..2d68790 100755
 +      <child>chase_camera_link</child>
 +    </joint>
 +
-     <!-- plugins -->
-     <plugin filename="gz-sim-joint-state-publisher-system"
-       name="gz::sim::systems::JointStatePublisher">
-@@ -187,7 +287,7 @@
-     <plugin name="ArduPilotPlugin"
-       filename="ArduPilotPlugin">
-       <!-- Port settings -->
--      <fdm_addr>127.0.0.1</fdm_addr>
++    <!-- plugins -->
++    <plugin filename="gz-sim-joint-state-publisher-system"
++      name="gz::sim::systems::JointStatePublisher">
++    </plugin>
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>0.084 0 0</cp>
++      <forward>0 1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_0</link_name>
++    </plugin>
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>-0.084 0 0</cp>
++      <forward>0 -1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_0</link_name>
++    </plugin>
++
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>0.084 0 0</cp>
++      <forward>0 1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_1</link_name>
++    </plugin>
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>-0.084 0 0</cp>
++      <forward>0 -1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_1</link_name>
++    </plugin>
++
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>0.084 0 0</cp>
++      <forward>0 -1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_2</link_name>
++    </plugin>
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>-0.084 0 0</cp>
++      <forward>0 1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_2</link_name>
++    </plugin>
++
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>0.084 0 0</cp>
++      <forward>0 -1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_3</link_name>
++    </plugin>
++    <plugin filename="gz-sim-lift-drag-system"
++        name="gz::sim::systems::LiftDrag">
++      <a0>0.3</a0>
++      <alpha_stall>1.4</alpha_stall>
++      <cla>4.2500</cla>
++      <cda>0.10</cda>
++      <cma>0.0</cma>
++      <cla_stall>-0.025</cla_stall>
++      <cda_stall>0.0</cda_stall>
++      <cma_stall>0.0</cma_stall>
++      <area>0.002</area>
++      <air_density>1.2041</air_density>
++      <cp>-0.084 0 0</cp>
++      <forward>0 1 0</forward>
++      <upward>0 0 1</upward>
++      <link_name>iris_with_standoffs::rotor_3</link_name>
++    </plugin>
++
++    <plugin filename="gz-sim-apply-joint-force-system"
++      name="gz::sim::systems::ApplyJointForce">
++      <joint_name>iris_with_standoffs::rotor_0_joint</joint_name>
++    </plugin>
++    <plugin filename="gz-sim-apply-joint-force-system"
++      name="gz::sim::systems::ApplyJointForce">
++      <joint_name>iris_with_standoffs::rotor_1_joint</joint_name>
++    </plugin>
++    <plugin filename="gz-sim-apply-joint-force-system"
++      name="gz::sim::systems::ApplyJointForce">
++      <joint_name>iris_with_standoffs::rotor_2_joint</joint_name>
++    </plugin>
++    <plugin filename="gz-sim-apply-joint-force-system"
++      name="gz::sim::systems::ApplyJointForce">
++      <joint_name>iris_with_standoffs::rotor_3_joint</joint_name>
++    </plugin>
++
++    <plugin name="ArduPilotPlugin"
++      filename="ArduPilotPlugin">
++      <!-- Port settings -->
 +      <fdm_addr>0.0.0.0</fdm_addr>
-       <fdm_port_in>9002</fdm_port_in>
-       <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
-       <lock_step>1</lock_step>
-@@ -323,21 +423,18 @@
-       filename="gz-sim-joint-position-controller-system"
-       name="gz::sim::systems::JointPositionController">
-       <joint_name>gimbal::roll_joint</joint_name>
++      <fdm_port_in>9002</fdm_port_in>
++      <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
++      <lock_step>1</lock_step>
++      <no_time_sync>1</no_time_sync>
++
++      <!-- Frame conventions
++        Require by ArduPilot: change model and gazebo from XYZ to XY-Z coordinates
++      -->
++      <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
++      <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
++
++      <!-- Sensors -->
++      <imuName>iris_with_standoffs::imu_link::imu_sensor</imuName>
++
++      <!--
++          incoming control command [0, 1]
++          so offset it by 0 to get [0, 1]
++          and divide max target by 1.
++          offset = 0
++          multiplier = 838 max rpm / 1 = 838
++        -->
++      <control channel="0">
++        <jointName>iris_with_standoffs::rotor_0_joint</jointName>
++        <useForce>1</useForce>
++        <multiplier>838</multiplier>
++        <offset>0</offset>
++        <servo_min>1100</servo_min>
++        <servo_max>1900</servo_max>
++        <type>VELOCITY</type>
++        <p_gain>0.20</p_gain>
++        <i_gain>0</i_gain>
++        <d_gain>0</d_gain>
++        <i_max>0</i_max>
++        <i_min>0</i_min>
++        <cmd_max>2.5</cmd_max>
++        <cmd_min>-2.5</cmd_min>
++        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
++      </control>
++
++      <control channel="1">
++        <jointName>iris_with_standoffs::rotor_1_joint</jointName>
++        <useForce>1</useForce>
++        <multiplier>838</multiplier>
++        <offset>0</offset>
++        <servo_min>1100</servo_min>
++        <servo_max>1900</servo_max>
++        <type>VELOCITY</type>
++        <p_gain>0.20</p_gain>
++        <i_gain>0</i_gain>
++        <d_gain>0</d_gain>
++        <i_max>0</i_max>
++        <i_min>0</i_min>
++        <cmd_max>2.5</cmd_max>
++        <cmd_min>-2.5</cmd_min>
++        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
++      </control>
++
++      <control channel="2">
++        <jointName>iris_with_standoffs::rotor_2_joint</jointName>
++        <useForce>1</useForce>
++        <multiplier>-838</multiplier>
++        <offset>0</offset>
++        <servo_min>1100</servo_min>
++        <servo_max>1900</servo_max>
++        <type>VELOCITY</type>
++        <p_gain>0.20</p_gain>
++        <i_gain>0</i_gain>
++        <d_gain>0</d_gain>
++        <i_max>0</i_max>
++        <i_min>0</i_min>
++        <cmd_max>2.5</cmd_max>
++        <cmd_min>-2.5</cmd_min>
++        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
++      </control>
++
++      <control channel="3">
++        <jointName>iris_with_standoffs::rotor_3_joint</jointName>
++        <useForce>1</useForce>
++        <multiplier>-838</multiplier>
++        <offset>0</offset>
++        <servo_min>1100</servo_min>
++        <servo_max>1900</servo_max>
++        <type>VELOCITY</type>
++        <p_gain>0.20</p_gain>
++        <i_gain>0</i_gain>
++        <d_gain>0</d_gain>
++        <i_max>0</i_max>
++        <i_min>0</i_min>
++        <cmd_max>2.5</cmd_max>
++        <cmd_min>-2.5</cmd_min>
++        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
++      </control>
++
++    </plugin>
++
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_x_joint</joint_name>
++      <p_gain>20</p_gain>
++    </plugin>
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_y_joint</joint_name>
++      <p_gain>20</p_gain>
++    </plugin>
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_z_joint</joint_name>
++      <p_gain>20</p_gain>
++    </plugin>
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_yaw_joint</joint_name>
++      <p_gain>2</p_gain>
++    </plugin>
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_pitch_joint</joint_name>
++      <p_gain>2</p_gain>
++    </plugin>
++    <plugin
++      filename="gz-sim-joint-position-controller-system"
++      name="gz::sim::systems::JointPositionController">
++      <joint_name>deployed_camera_roll_joint</joint_name>
++      <p_gain>2</p_gain>
++    </plugin>
++
++  </model>
++</sdf>
+diff --git a/models/iris_with_gimbal/model.config b/models/iris_with_gimbal/model.config
+deleted file mode 100755
+index b7fdff3..0000000
+--- a/models/iris_with_gimbal/model.config
++++ /dev/null
+@@ -1,45 +0,0 @@
+-<?xml version="1.0"?>
+-
+-<model>
+-  <name>Iris with Gimbal</name>
+-  <version>2.0</version>
+-  <sdf version="1.9">model.sdf</sdf>
+-
+-  <author>
+-    <name>Fadri Furrer</name>
+-    <email>fadri.furrer@mavt.ethz.ch</email>
+-  </author>
+-  <author>
+-    <name>Michael Burri</name>
+-  </author>
+-  <author>
+-    <name>Mina Kamel</name>
+-  </author>
+-  <author>
+-    <name>Janosch Nikolic</name>
+-  </author>
+-  <author>
+-    <name>Markus Achtelik</name>
+-  </author>
+-
+-  <author>
+-    <name>Rhys Mainwaring</name>
+-  </author>
+-
+-  <description>
+-    Starting with iris_with_standoffs
+-    add LiftDragPlugin
+-    add ArduCopterPlugin
+-    add gimbal_small_2d
+-  </description>
+-  <depend>
+-    <model>
+-      <uri>model://gimbal_small_2d</uri>
+-      <version>2.0</version>
+-    </model>
+-    <model>
+-      <uri>model://iris_with_standoffs</uri>
+-      <version>2.0</version>
+-    </model>
+-  </depend>
+-</model>
+diff --git a/models/iris_with_gimbal/model.sdf b/models/iris_with_gimbal/model.sdf
+deleted file mode 100755
+index dae756d..0000000
+--- a/models/iris_with_gimbal/model.sdf
++++ /dev/null
+@@ -1,345 +0,0 @@
+-<?xml version='1.0'?>
+-<sdf version="1.9">
+-  <model name="iris_with_gimbal">
+-    <include>
+-      <uri>model://iris_with_standoffs</uri>
+-    </include>
+-
+-    <include>
+-      <uri>model://gimbal_small_3d</uri>
+-      <name>gimbal</name>
+-      <pose degrees="true">0 -0.01 -0.124923 90 0 90</pose>    
+-    </include>
+-
+-    <joint name="gimbal_joint" type="revolute">
+-      <parent>iris_with_standoffs::base_link</parent>
+-      <child>gimbal::base_link</child>
+-      <axis>
+-        <limit>
+-          <lower>0</lower>
+-          <upper>0</upper>
+-        </limit>
+-        <xyz>0 0 1</xyz>
+-      </axis>
+-    </joint>
+-
+-    <!-- plugins -->
+-    <plugin filename="gz-sim-joint-state-publisher-system"
+-      name="gz::sim::systems::JointStatePublisher">
+-    </plugin>
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>0.084 0 0</cp>
+-      <forward>0 1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_0</link_name>
+-    </plugin>
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>-0.084 0 0</cp>
+-      <forward>0 -1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_0</link_name>
+-    </plugin>
+-
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>0.084 0 0</cp>
+-      <forward>0 1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_1</link_name>
+-    </plugin>
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>-0.084 0 0</cp>
+-      <forward>0 -1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_1</link_name>
+-    </plugin>
+-
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>0.084 0 0</cp>
+-      <forward>0 -1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_2</link_name>
+-    </plugin>
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>-0.084 0 0</cp>
+-      <forward>0 1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_2</link_name>
+-    </plugin>
+-
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>0.084 0 0</cp>
+-      <forward>0 -1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_3</link_name>
+-    </plugin>
+-    <plugin filename="gz-sim-lift-drag-system"
+-        name="gz::sim::systems::LiftDrag">
+-      <a0>0.3</a0>
+-      <alpha_stall>1.4</alpha_stall>
+-      <cla>4.2500</cla>
+-      <cda>0.10</cda>
+-      <cma>0.0</cma>
+-      <cla_stall>-0.025</cla_stall>
+-      <cda_stall>0.0</cda_stall>
+-      <cma_stall>0.0</cma_stall>
+-      <area>0.002</area>
+-      <air_density>1.2041</air_density>
+-      <cp>-0.084 0 0</cp>
+-      <forward>0 1 0</forward>
+-      <upward>0 0 1</upward>
+-      <link_name>iris_with_standoffs::rotor_3</link_name>
+-    </plugin>
+-
+-    <plugin filename="gz-sim-apply-joint-force-system"
+-      name="gz::sim::systems::ApplyJointForce">
+-      <joint_name>iris_with_standoffs::rotor_0_joint</joint_name>
+-    </plugin>
+-    <plugin filename="gz-sim-apply-joint-force-system"
+-      name="gz::sim::systems::ApplyJointForce">
+-      <joint_name>iris_with_standoffs::rotor_1_joint</joint_name>
+-    </plugin>
+-    <plugin filename="gz-sim-apply-joint-force-system"
+-      name="gz::sim::systems::ApplyJointForce">
+-      <joint_name>iris_with_standoffs::rotor_2_joint</joint_name>
+-    </plugin>
+-    <plugin filename="gz-sim-apply-joint-force-system"
+-      name="gz::sim::systems::ApplyJointForce">
+-      <joint_name>iris_with_standoffs::rotor_3_joint</joint_name>
+-    </plugin>
+-
+-    <plugin name="ArduPilotPlugin"
+-      filename="ArduPilotPlugin">
+-      <!-- Port settings -->
+-      <fdm_addr>127.0.0.1</fdm_addr>
+-      <fdm_port_in>9002</fdm_port_in>
+-      <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
+-      <lock_step>1</lock_step>
+-      <no_time_sync>1</no_time_sync>
+-
+-      <!-- Frame conventions
+-        Require by ArduPilot: change model and gazebo from XYZ to XY-Z coordinates
+-      -->
+-      <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
+-      <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
+-
+-      <!-- Sensors -->
+-      <imuName>iris_with_standoffs::imu_link::imu_sensor</imuName>
+-
+-      <!--
+-          incoming control command [0, 1]
+-          so offset it by 0 to get [0, 1]
+-          and divide max target by 1.
+-          offset = 0
+-          multiplier = 838 max rpm / 1 = 838
+-        -->
+-      <control channel="0">
+-        <jointName>iris_with_standoffs::rotor_0_joint</jointName>
+-        <useForce>1</useForce>
+-        <multiplier>838</multiplier>
+-        <offset>0</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>VELOCITY</type>
+-        <p_gain>0.20</p_gain>
+-        <i_gain>0</i_gain>
+-        <d_gain>0</d_gain>
+-        <i_max>0</i_max>
+-        <i_min>0</i_min>
+-        <cmd_max>2.5</cmd_max>
+-        <cmd_min>-2.5</cmd_min>
+-        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+-      </control>
+-
+-      <control channel="1">
+-        <jointName>iris_with_standoffs::rotor_1_joint</jointName>
+-        <useForce>1</useForce>
+-        <multiplier>838</multiplier>
+-        <offset>0</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>VELOCITY</type>
+-        <p_gain>0.20</p_gain>
+-        <i_gain>0</i_gain>
+-        <d_gain>0</d_gain>
+-        <i_max>0</i_max>
+-        <i_min>0</i_min>
+-        <cmd_max>2.5</cmd_max>
+-        <cmd_min>-2.5</cmd_min>
+-        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+-      </control>
+-
+-      <control channel="2">
+-        <jointName>iris_with_standoffs::rotor_2_joint</jointName>
+-        <useForce>1</useForce>
+-        <multiplier>-838</multiplier>
+-        <offset>0</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>VELOCITY</type>
+-        <p_gain>0.20</p_gain>
+-        <i_gain>0</i_gain>
+-        <d_gain>0</d_gain>
+-        <i_max>0</i_max>
+-        <i_min>0</i_min>
+-        <cmd_max>2.5</cmd_max>
+-        <cmd_min>-2.5</cmd_min>
+-        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+-      </control>
+-
+-      <control channel="3">
+-        <jointName>iris_with_standoffs::rotor_3_joint</jointName>
+-        <useForce>1</useForce>
+-        <multiplier>-838</multiplier>
+-        <offset>0</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>VELOCITY</type>
+-        <p_gain>0.20</p_gain>
+-        <i_gain>0</i_gain>
+-        <d_gain>0</d_gain>
+-        <i_max>0</i_max>
+-        <i_min>0</i_min>
+-        <cmd_max>2.5</cmd_max>
+-        <cmd_min>-2.5</cmd_min>
+-        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+-      </control>
+-
+-      <!-- roll range is -30 to +30 deg -->
+-      <control channel="8">
+-        <jointName>gimbal::roll_joint</jointName>
+-        <multiplier>1.047197551196</multiplier>
+-        <offset>-0.5</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>COMMAND</type>
+-        <cmd_topic>/gimbal/cmd_roll</cmd_topic>
+-        <p_gain>2</p_gain>
+-      </control>
+-
+-      <!-- pitch range is -135 to +45 deg -->
+-      <control channel="9">
+-        <jointName>gimbal::pitch_joint</jointName>
+-        <multiplier>-3.14159265</multiplier>
+-        <offset>-0.75</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>COMMAND</type>
+-        <cmd_topic>/gimbal/cmd_pitch</cmd_topic>
+-        <p_gain>2</p_gain>
+-      </control>
+-
+-      <!-- yaw range is -160 to +160 deg -->
+-      <control channel="10">
+-        <jointName>gimbal::yaw_joint</jointName>
+-        <multiplier>-5.5850536</multiplier>
+-        <offset>-0.5</offset>
+-        <servo_min>1100</servo_min>
+-        <servo_max>1900</servo_max>
+-        <type>COMMAND</type>
+-        <cmd_topic>/gimbal/cmd_yaw</cmd_topic>
+-        <p_gain>2</p_gain>
+-      </control>
+-
+-    </plugin>
+-
+-    <plugin
+-      filename="gz-sim-joint-position-controller-system"
+-      name="gz::sim::systems::JointPositionController">
+-      <joint_name>gimbal::roll_joint</joint_name>
 -      <topic>/gimbal/cmd_roll</topic>
-       <p_gain>2</p_gain>
-     </plugin>
-     <plugin
-       filename="gz-sim-joint-position-controller-system"
-       name="gz::sim::systems::JointPositionController">
-       <joint_name>gimbal::pitch_joint</joint_name>
+-      <p_gain>2</p_gain>
+-    </plugin>
+-    <plugin
+-      filename="gz-sim-joint-position-controller-system"
+-      name="gz::sim::systems::JointPositionController">
+-      <joint_name>gimbal::pitch_joint</joint_name>
 -      <topic>/gimbal/cmd_pitch</topic>
-       <p_gain>2</p_gain>
-     </plugin>
-     <plugin
-       filename="gz-sim-joint-position-controller-system"
-       name="gz::sim::systems::JointPositionController">
-       <joint_name>gimbal::yaw_joint</joint_name>
+-      <p_gain>2</p_gain>
+-    </plugin>
+-    <plugin
+-      filename="gz-sim-joint-position-controller-system"
+-      name="gz::sim::systems::JointPositionController">
+-      <joint_name>gimbal::yaw_joint</joint_name>
 -      <topic>/gimbal/cmd_yaw</topic>
-       <p_gain>2</p_gain>
-     </plugin>
- 
+-      <p_gain>2</p_gain>
+-    </plugin>
+-
+-  </model>
+-</sdf>

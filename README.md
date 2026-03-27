@@ -114,13 +114,42 @@ and exposes two rendered views:
 - `Chase Camera`: a trailing view that keeps the vehicle in frame
 - `Deployed Camera`: a rendered image from a front-bottom camera mounted on the vehicle
 
-The visual GUI also exposes `Camera Gimbal Controls`, which drive the deployed
-camera roll, pitch, and yaw from a neutral `0, 0, 0` orientation.
+The deployed camera baseline is loaded from
+`config/visual/camera.deployment.json`.
+
+By default, the visual stack runs in `experiment` mode, where the two rendered
+camera views dominate the GUI and the calibration controls are hidden.
+
+When started with `--calib`, the GUI also exposes `Camera Mount 6-DOF Controls`
+for interactive camera-mount tuning. The controls are split as follows:
+
+- `x`, `y`, `z`: absolute translation of the rigid deployed-camera mount in the drone body frame
+- `yaw`, `pitch`, `roll`: absolute orientation of the rigid deployed-camera mount in radians
+
+The same 6-DOF deployment is used in both visual modes:
+
+- `experiment`: the deployment is baked into a generated rigid-camera runtime model
+- `--calib`: Gazebo initializes the six helper joints to the configured values, so the GUI reflects the real deployment instead of zeroed offsets
 
 ### Start the visual stack
 
 ```bash
 ./scripts/run_visual_stack.sh
+```
+
+Each visual run writes a full debug bundle under `logs/runs/<timestamp>-<mode>/`
+containing the generated world/model, the requested camera config, the applied
+manifest, per-service logs, deployment verification reports, ROS graph
+snapshots, and HLC/MC readiness evidence.
+
+If a visual stack is already running, this command now prints a notice, stops
+the existing stack, and starts a fresh run so camera/config changes are always
+applied deterministically.
+
+### Start the calibration visual stack
+
+```bash
+./scripts/run_visual_stack.sh --calib
 ```
 
 ### Validate the visual stack
@@ -129,10 +158,26 @@ camera roll, pitch, and yaw from a neutral `0, 0, 0` orientation.
 ./scripts/validate_visual_stack.sh
 ```
 
+### Validate the calibration visual stack
+
+```bash
+./scripts/validate_visual_stack.sh --calib
+```
+
 ### Run keyboard control against the visual stack
 
 ```bash
 ./scripts/run_visual_manual_runtime_test.sh
+```
+
+This command also refreshes the visual stack first, so the current
+`config/visual/camera.deployment.json` values are guaranteed to be active before
+teleoperation starts.
+
+### Run keyboard control against the calibration visual stack
+
+```bash
+./scripts/run_visual_manual_runtime_test.sh --calib
 ```
 
 This workflow uses the same ROS command interface as local decision modules, so

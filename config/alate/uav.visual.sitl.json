@@ -31,7 +31,8 @@
     "full_path_to_python": "/usr/bin/python3",
     "master": "tcp:sitl:5762",
     "baud": "921600",
-    "altitude": 10,
+    "force_arm": true,
+    "altitude": 5,
     "low_bat_voltage": "11.1"
   },
   "behaviors": {},

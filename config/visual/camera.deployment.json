@@ -1,0 +1,14 @@
+{
+  "deployment": {
+    "position_m": {
+      "x": 0.06,
+      "y": 0.0,
+      "z": -0.03
+    },
+    "orientation_rad": {
+      "yaw": 0.0,
+      "pitch": 0.16,
+      "roll": 0.0
+    }
+  }
+}

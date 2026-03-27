@@ -21,9 +21,15 @@ The recommended workflow uses the Gazebo-backed visual stack:
 
 - a chase-camera rendered view that keeps the vehicle in frame
 - a front-bottom deployed camera rendered from the vehicle itself
-- a GUI gimbal-control panel for roll, pitch, and yaw
+- a JSON-configured deployed-camera mount loaded from `config/visual/camera.deployment.json`
 - the same ROS and NeMALA runtime used by decision modules
 - keyboard control through the `manual_runtime_test` package
+
+By default, the visual stack starts in `experiment` mode, where the two rendered
+camera views dominate the GUI and the calibration controls are hidden.
+
+Use `--calib` when you want the full 6-DOF camera-mount control panel back for
+interactive tuning.
 
 This mode requires a local X11 desktop session with `DISPLAY` available.
 
@@ -47,7 +53,9 @@ through the same ROS interface boundary used by other decision modules.
 - `l`: land
 - `g`: go home
 - `w`: forward
+- `a`: left
 - `s`: back
+- `d`: right
 - `r`: up
 - `f`: down
 - `space`: stop
@@ -63,17 +71,57 @@ additional spawn implementation is required for the current simulation path.
 ./scripts/run_visual_manual_runtime_test.sh
 ```
 
+Calibration mode:
+
+```bash
+./scripts/run_visual_manual_runtime_test.sh --calib
+```
+
 The script:
 
-1. starts the Gazebo-backed visual stack if it is not already running
-2. waits for HLC and MC readiness
-3. launches the keyboard teleoperation node in the development container
-4. keeps the chase and deployed-camera views available in Gazebo while commands are issued
-5. exposes `Camera Gimbal Controls` in Gazebo for interactive roll, pitch, and yaw adjustment
+1. refreshes the Gazebo-backed visual stack so the latest deployment/config values are active
+2. launches or relaunches the Gazebo GUI client as part of that fresh visual bring-up
+3. waits for HLC and MC readiness
+4. launches the keyboard teleoperation node in the development container
+5. keeps the chase and deployed-camera views available in Gazebo while commands are issued
+6. uses the deployment stored in `config/visual/camera.deployment.json`
+7. writes the full run record under `logs/runs/<timestamp>-<mode>/`
 
-The deployed camera is mounted at the front-bottom of the vehicle. The gimbal
-starts at a neutral roll, pitch, and yaw of `0, 0, 0`, and the GUI controls
-command those three rotation axes directly.
+The run record includes:
+
+- generated world/model assets
+- requested and applied camera deployment manifests
+- per-service stdout/stderr logs
+- `deployment.verify.json`
+- `ros2.topics.txt`
+- `hlc.readiness.log`
+- `mc.readiness.log`
+
+When `--calib` is used, Gazebo also exposes `Camera Mount 6-DOF Controls` for
+interactive camera position and orientation adjustment.
+
+The deployed camera is mounted at the front-bottom of the vehicle.
+
+The controls are intentionally split into two stages:
+
+- `x`, `y`, `z`: absolute translation of the rigid deployed-camera mount in the drone body frame, measured in meters
+- `yaw`, `pitch`, `roll`: absolute orientation of the rigid deployed-camera mount, measured in radians
+
+The same 6-DOF values drive both visual modes:
+
+- in `experiment`, the deployment is baked into a generated rigid-camera model
+- in `--calib`, Gazebo initializes the six helper joints to those same values so the GUI reads the real configured deployment instead of zero
+
+This keeps calibration mode and experiment mode consistent, and avoids hidden
+offsets between what you tune and what the default stack actually loads.
+
+By default, motion commands latch until a new direction is requested or
+`space` is pressed. This makes the visual test behave like a simple operator
+controller instead of a short pulse generator.
+
+If you stop the GUI window but leave the visual stack running, rerunning
+`./scripts/run_visual_manual_runtime_test.sh` will now relaunch the GUI client
+before starting keyboard control.
 
 ## Validate the Visual Stack
 
@@ -81,13 +129,25 @@ command those three rotation axes directly.
 ./scripts/validate_visual_stack.sh
 ```
 
+Calibration-mode validation:
+
+```bash
+./scripts/validate_visual_stack.sh --calib
+```
+
 This validator checks:
 
 - visual stack bring-up
 - HLC and MC readiness
 - availability of `/mars/visual/chase_camera` and `/mars/visual/deployed_camera`
-- availability of the native Gazebo gimbal position topics for roll, pitch, and yaw
+- live deployed-camera pose verification against `config/visual/camera.deployment.json`
 - scripted teleoperation command publication against the visual runtime
+- presence of the run manifest, generated visual assets, and per-service runtime logs
+
+In `--calib` mode, it also checks:
+
+- availability of the native Gazebo camera-mount position topics for `x`, `y`, `z`, `yaw`, `pitch`, and `roll`
+- convergence of the camera-mount joint state to the configured `x`, `y`, `z`, `yaw`, `pitch`, and `roll`
 
 ## Run the Headless Interactive Test
 

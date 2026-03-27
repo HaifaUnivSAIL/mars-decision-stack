@@ -7,15 +7,18 @@ class Action:
     kind: str
     label: str
     linear_x: float = 0.0
+    linear_y: float = 0.0
     linear_z: float = 0.0
     operator_command: str = ''
     wait_sec: float = 0.0
 
 
-def build_named_actions(linear_step_x: float, linear_step_z: float) -> Dict[str, Action]:
+def build_named_actions(linear_step_x: float, linear_step_y: float, linear_step_z: float) -> Dict[str, Action]:
     return {
         'forward': Action(kind='velocity', label='forward', linear_x=linear_step_x),
         'back': Action(kind='velocity', label='back', linear_x=-linear_step_x),
+        'left': Action(kind='velocity', label='left', linear_y=-linear_step_y),
+        'right': Action(kind='velocity', label='right', linear_y=linear_step_y),
         'up': Action(kind='velocity', label='up', linear_z=linear_step_z),
         'down': Action(kind='velocity', label='down', linear_z=-linear_step_z),
         'stop': Action(kind='stop', label='stop'),
@@ -27,11 +30,13 @@ def build_named_actions(linear_step_x: float, linear_step_z: float) -> Dict[str,
     }
 
 
-def build_key_bindings(linear_step_x: float, linear_step_z: float) -> Dict[str, Action]:
-    named_actions = build_named_actions(linear_step_x, linear_step_z)
+def build_key_bindings(linear_step_x: float, linear_step_y: float, linear_step_z: float) -> Dict[str, Action]:
+    named_actions = build_named_actions(linear_step_x, linear_step_y, linear_step_z)
     return {
         'w': named_actions['forward'],
         's': named_actions['back'],
+        'a': named_actions['left'],
+        'd': named_actions['right'],
         'r': named_actions['up'],
         'f': named_actions['down'],
         ' ': named_actions['stop'],
@@ -43,13 +48,13 @@ def build_key_bindings(linear_step_x: float, linear_step_z: float) -> Dict[str, 
     }
 
 
-def parse_script_action(action_text: str, linear_step_x: float, linear_step_z: float) -> Action:
+def parse_script_action(action_text: str, linear_step_x: float, linear_step_y: float, linear_step_z: float) -> Action:
     normalized = action_text.strip().lower()
     if normalized.startswith('wait:'):
         wait_sec = float(normalized.split(':', 1)[1])
         return Action(kind='wait', label=f'wait {wait_sec:.2f}s', wait_sec=wait_sec)
 
-    named_actions = build_named_actions(linear_step_x, linear_step_z)
+    named_actions = build_named_actions(linear_step_x, linear_step_y, linear_step_z)
     if normalized not in named_actions:
         raise ValueError(f'Unsupported scripted action: {action_text}')
     return named_actions[normalized]
@@ -62,7 +67,9 @@ def render_help() -> str:
         '[l] land  '
         '[g] gohome  '
         '[w] forward  '
+        '[a] left  '
         '[s] back  '
+        '[d] right  '
         '[r] up  '
         '[f] down  '
         '[space] stop  '

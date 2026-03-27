@@ -355,10 +355,10 @@ index b2c830e..5cbfc5b 100644
      use_sim_time: false
 -
 diff --git a/src/adapter.cpp b/src/adapter.cpp
-index d67292d..f69bbb5 100644
+index d67292d..0131b17 100644
 --- a/src/adapter.cpp
 +++ b/src/adapter.cpp
-@@ -15,151 +15,178 @@ limitations under the License.
+@@ -15,151 +15,203 @@ limitations under the License.
  */
  
  #include "ros_alate/adapter.h"
@@ -516,6 +516,20 @@ index d67292d..f69bbb5 100644
 +  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_high_level_control_telemetry_topic.as_int()), m_pHandlerHlcTelemetry);
 +  m_pDispatcher->AddHandler(static_cast<unsigned int>(param_alate_high_level_control_platform_error_topic.as_int()), m_pHandlerHlcPlatformError);
 +
++  RCLCPP_INFO(
++    this->get_logger(),
++    "ros_alate adapter config: node_id=%ld opcom_topic=%ld velocity_topic=%ld mc_state_topic=%ld hlc_state_topic=%ld hlc_telemetry_topic=%ld hlc_platform_error_topic=%ld sub_endpoint=%s pub_endpoint=%s",
++    static_cast<long>(param_nemala_node_id.as_int()),
++    static_cast<long>(param_alate_operator_command_topic.as_int()),
++    static_cast<long>(param_alate_velocity_topic.as_int()),
++    static_cast<long>(param_alate_mission_control_state_topic.as_int()),
++    static_cast<long>(param_alate_high_level_control_state_topic.as_int()),
++    static_cast<long>(param_alate_high_level_control_telemetry_topic.as_int()),
++    static_cast<long>(param_alate_high_level_control_platform_error_topic.as_int()),
++    param_proxy_endpoint_for_subscribing.as_string().c_str(),
++    param_proxy_endpoint_for_publishing.as_string().c_str()
++  );
++
 +  m_pSubscriptionVelocity = this->create_subscription<geometry_msgs::msg::Twist>(
 +    "alate_input_velocity", 10, std::bind(&Adapter::callback_Velocity, this, std::placeholders::_1)
 +  );
@@ -606,6 +620,16 @@ index d67292d..f69bbb5 100644
  {
 -	ros_alate_interfaces::Vector6Message VelComMsg(msg.linear.x, msg.linear.y, msg.linear.z, msg.angular.z, msg.angular.y, msg.angular.x);
 -	m_pPublisherVelocity->Publish(VelComMsg);
++  RCLCPP_DEBUG(
++    this->get_logger(),
++    "Publishing velocity command linear=(%.3f, %.3f, %.3f) angular=(%.3f, %.3f, %.3f)",
++    msg.linear.x,
++    msg.linear.y,
++    msg.linear.z,
++    msg.angular.x,
++    msg.angular.y,
++    msg.angular.z
++  );
 +  ros_alate_interfaces::Vector6Message vel_com_msg(msg.linear.x, msg.linear.y, msg.linear.z, msg.angular.z, msg.angular.y, msg.angular.x);
 +  m_pPublisherVelocity->Publish(vel_com_msg);
  }
@@ -636,6 +660,7 @@ index d67292d..f69bbb5 100644
 -	}
 -	ros_alate_interfaces::OpComMessage msgCom(eCom);
 -	m_pPublisherOpCom->Publish(msgCom);
++  RCLCPP_DEBUG(this->get_logger(), "Publishing operator command enum=%d", msg.op_com_enum);
 +  ros_alate_interfaces::OpComMessage::OpCommandEnum eCom(ros_alate_interfaces::OpComMessage::OpCommandNone);
 +  switch(msg.op_com_enum)
 +  {

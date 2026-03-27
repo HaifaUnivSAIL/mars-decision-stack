@@ -125,6 +125,20 @@
         </gz-gui>
         <topic>/mars/visual/deployed_camera</topic>
       </plugin>
+      <plugin filename="JointPositionController" name="Camera Mount Controls">
+        <gz-gui>
+          <title>Camera Mount 6-DOF Controls</title>
+          <property type="bool" key="showTitleBar">true</property>
+          <property type="bool" key="resizable">true</property>
+          <property type="double" key="x">930</property>
+          <property type="double" key="y">560</property>
+          <property type="double" key="width">420</property>
+          <property type="double" key="height">420</property>
+          <property type="double" key="z">2</property>
+          <property type="string" key="state">floating</property>
+        </gz-gui>
+        <model_name>iris_with_camera_calibration</model_name>
+      </plugin>
     </gui>
 
     <light type="directional" name="sun">

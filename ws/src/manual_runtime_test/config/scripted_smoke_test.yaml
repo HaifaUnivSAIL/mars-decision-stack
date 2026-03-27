@@ -1,6 +1,7 @@
 /manual_runtime_test:
   ros__parameters:
     linear_step_x: 0.3
+    linear_step_y: 0.3
     linear_step_z: 0.2
     publish_rate_hz: 10.0
     motion_hold_sec: 1.0
@@ -11,6 +12,18 @@
     scripted_actions:
       - wait:2.0
       - forward
+      - wait:0.5
+      - stop
+      - wait:0.5
+      - left
+      - wait:0.5
+      - stop
+      - wait:0.5
+      - right
+      - wait:0.5
+      - stop
+      - wait:0.5
+      - back
       - wait:0.5
       - stop
       - quit

@@ -16,14 +16,15 @@ class ManualRuntimeRosIo:
         node.create_subscription(HlcTelemetry, '/alate_output_high_level_control_telemetry', self._on_telemetry, 10)
         node.create_subscription(HlcPlatformError, '/alate_output_high_level_control_platform_errors', self._on_error, 10)
 
-    def publish_velocity(self, linear_x: float, linear_z: float) -> None:
+    def publish_velocity(self, linear_x: float, linear_y: float, linear_z: float) -> None:
         msg = Twist()
         msg.linear.x = linear_x
+        msg.linear.y = linear_y
         msg.linear.z = linear_z
         self._velocity_pub.publish(msg)
 
     def publish_zero(self) -> None:
-        self.publish_velocity(0.0, 0.0)
+        self.publish_velocity(0.0, 0.0, 0.0)
 
     def publish_operator_command(self, op_com_enum: int) -> None:
         msg = OpCom()

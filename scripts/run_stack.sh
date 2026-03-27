@@ -16,13 +16,20 @@ containers=(
 
 mkdir -p "${LOG_DIR}"
 
+running_stack_containers() {
+  docker ps --format '{{.Names}}' | grep -E "^${STACK_NAME}-(decision-dev|ros-nemala|ros-alate|hlc|mc|logger|proxy|sitl|visual-sim)$" || true
+}
+
 if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   "${ROOT_DIR}/scripts/build_ws.sh"
 fi
 
-for container in "${containers[@]}"; do
-  docker rm -f "${container}" >/dev/null 2>&1 || true
-done
+existing_stack="$(running_stack_containers)"
+if [ -n "${existing_stack}" ]; then
+  printf 'Existing %s stack detected. Stopping it before fresh bring-up.\n' "${STACK_NAME}"
+  printf '%s\n' "${existing_stack}"
+  "${ROOT_DIR}/scripts/stop_stack.sh"
+fi
 
 docker volume inspect "${VOLUME}" >/dev/null 2>&1 || docker volume create "${VOLUME}" >/dev/null
 docker network inspect "${NETWORK}" >/dev/null 2>&1 || docker network create "${NETWORK}" >/dev/null
