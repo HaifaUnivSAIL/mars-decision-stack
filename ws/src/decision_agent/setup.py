@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'policy_node = decision_agent.policy_node:main',
+            'scenario_node = decision_agent.scenario_node:main',
         ],
     },
 )

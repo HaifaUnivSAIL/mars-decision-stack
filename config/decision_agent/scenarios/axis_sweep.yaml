@@ -1,0 +1,23 @@
+/policy_scenario:
+  ros__parameters:
+    control_frequency_hz: 10.0
+    telemetry_timeout_sec: 2.0
+    require_ready_state: true
+    ready_hold_sec: 1.0
+    auto_takeoff: true
+    takeoff_altitude_m: 3.0
+    takeoff_timeout_sec: 35.0
+    land_after_actions: true
+    landing_timeout_sec: 35.0
+    stop_after_actions_sec: 1.5
+    scenario_name: axis_sweep
+    scripted_actions:
+      - wait:1.5
+      - velocity:0.40,0.00,0.00,2.5
+      - stop:1.5
+      - velocity:-0.40,0.00,0.00,2.5
+      - stop:1.5
+      - velocity:0.00,0.40,0.00,2.5
+      - stop:1.5
+      - velocity:0.00,-0.40,0.00,2.5
+      - stop:2.0

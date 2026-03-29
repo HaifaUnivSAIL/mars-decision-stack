@@ -16,11 +16,25 @@ class AlateRosIo:
         node.create_subscription(HlcTelemetry, '/alate_output_high_level_control_telemetry', self._on_telemetry, 10)
         node.create_subscription(HlcPlatformError, '/alate_output_high_level_control_platform_errors', self._on_error, 10)
 
-    def publish_velocity(self, linear_x: float, angular_z: float) -> None:
+    def publish_twist(
+        self,
+        linear_x: float = 0.0,
+        linear_y: float = 0.0,
+        linear_z: float = 0.0,
+        angular_z: float = 0.0,
+    ) -> None:
         msg = Twist()
         msg.linear.x = linear_x
+        msg.linear.y = linear_y
+        msg.linear.z = linear_z
         msg.angular.z = angular_z
         self._velocity_pub.publish(msg)
+
+    def publish_velocity(self, linear_x: float, angular_z: float = 0.0) -> None:
+        self.publish_twist(linear_x=linear_x, angular_z=angular_z)
+
+    def publish_zero(self) -> None:
+        self.publish_twist()
 
     def publish_operator_command(self, op_com_enum: int) -> None:
         msg = OpCom()

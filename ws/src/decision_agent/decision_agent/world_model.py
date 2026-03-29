@@ -1,6 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+MC_STATE_STANDBY = 2
+MC_STATE_PERFORMINGMISSION = 4
+HLC_STATE_READY = 4
+HLC_STATE_TAKEOFF = 5
+HLC_STATE_GAINING_ALTITUDE = 6
+HLC_STATE_AIRBORNE = 7
+
 
 @dataclass
 class TelemetryState:
@@ -41,3 +48,28 @@ class WorldModel:
         if self.last_telemetry_time is None:
             return False
         return (now_sec - self.last_telemetry_time) <= timeout_sec
+
+    def is_runtime_ready(self, now_sec: float, timeout_sec: float, require_ready_state: bool = True) -> bool:
+        if not self.telemetry_is_fresh(now_sec, timeout_sec):
+            return False
+        if require_ready_state:
+            return self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY
+        if self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY:
+            return True
+        return self.telemetry.state.upper() == 'STANDBY'
+
+    def is_airborne(self, now_sec: float, timeout_sec: float, min_altitude_m: float) -> bool:
+        if not self.telemetry_is_fresh(now_sec, timeout_sec):
+            return False
+        if not self.telemetry.armed:
+            return False
+        if self.telemetry.altitude < min_altitude_m:
+            return False
+        return self.hlc_state in (HLC_STATE_GAINING_ALTITUDE, HLC_STATE_AIRBORNE) or self.telemetry.state.upper() == 'ACTIVE'
+
+    def is_landed(self, now_sec: float, timeout_sec: float, max_altitude_m: float = 0.3) -> bool:
+        if not self.telemetry_is_fresh(now_sec, timeout_sec):
+            return False
+        if self.telemetry.armed:
+            return False
+        return self.telemetry.altitude <= max_altitude_m
