@@ -1,5 +1,5 @@
 diff --git a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
-index 52a5b91..6d8033b 100644
+index 52a5b91..01250a6 100644
 --- a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 +++ b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 @@ -6,9 +6,15 @@
@@ -18,7 +18,7 @@ index 52a5b91..6d8033b 100644
  from dronekit import connect, VehicleMode, mavutil
  
  if __name__ == "__main__":
-@@ -27,19 +33,30 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -27,22 +33,36 @@ class AutopilotDronekit(AbstractAutopilot):
          The AutopilotDronekit class is an abstraction of a dronekit autopilot
      """
  
@@ -31,7 +31,10 @@ index 52a5b91..6d8033b 100644
          # A lock for guarding the vehicle since it handles its own connection
          self._lock = threading.Lock()
 +        self._force_arm = bool(force_arm)
-+        print(f"AutopilotDronekit connecting to target_address={target_address} baud_rate={baud_rate} force_arm={self._force_arm}")
++        self._log(
++            f"AutopilotDronekit connecting to target_address={target_address} "
++            f"baud_rate={baud_rate} force_arm={self._force_arm}"
++        )
          connected = False
          time_start = time.time()
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
@@ -50,26 +53,33 @@ index 52a5b91..6d8033b 100644
 +                )
                  connected = True
              except:
-                 print(sys.exc_info()[0])
-@@ -50,6 +67,7 @@ class AutopilotDronekit(AbstractAutopilot):
+-                print(sys.exc_info()[0])
++                self._log(f"AutopilotDronekit connection retry after error={sys.exc_info()[0]}")
+                 if (time.time() - time_start) < 60:
+                     continue
+                 else:
+@@ -50,6 +70,10 @@ class AutopilotDronekit(AbstractAutopilot):
          self._lock.release()  # ---------------------------------- Release ------------------------------------
          if not connected:
              raise RuntimeError("AutopilotDronekit.py failed to establish Vehicle Communication.")
-+        print("AutopilotDronekit connection established")
++        self._log("AutopilotDronekit connection established")
++
++    def _log(self, message):
++        print(message, file=sys.stderr, flush=True)
  
      ###################################################################################
      # ----------------------- AbstractAutopilot Interface Methods --------------------#
-@@ -62,31 +80,48 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -62,31 +86,48 @@ class AutopilotDronekit(AbstractAutopilot):
          super(AutopilotDronekit, self).shutdown()
  
      def ready2takeoff(self):
-+        print("AutopilotDronekit ready2takeoff: setting mode GUIDED")
++        self._log("AutopilotDronekit ready2takeoff: setting mode GUIDED")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("GUIDED")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def arm(self):
-+        print(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
++        self._log(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
 -        self._Vehicle.armed = True
 +        if self._force_arm:
@@ -87,37 +97,37 @@ index 52a5b91..6d8033b 100644
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def takeoff(self, dAltitude):
-+        print(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
++        self._log(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.simple_takeoff(dAltitude)
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def land(self):
-+        print("AutopilotDronekit land requested")
++        self._log("AutopilotDronekit land requested")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("LAND")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def rtl(self):
-+        print("AutopilotDronekit rtl requested")
++        self._log("AutopilotDronekit rtl requested")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("RTL")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_velocity_body_frame(self, forward, right, down):
-+        print(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
++        self._log(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
          # print(dForward)
          msg = self._Vehicle.message_factory.set_position_target_local_ned_encode(
              0,  # time_boot_ms (not used)
-@@ -102,6 +137,7 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -102,6 +143,7 @@ class AutopilotDronekit(AbstractAutopilot):
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_yaw_rate(self, deg_per_sec):
-+        print(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
++        self._log(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
          # print(dDegPerSec)
          rotation_direction = 1
          if (0 > deg_per_sec):
-@@ -122,25 +158,43 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -122,25 +164,43 @@ class AutopilotDronekit(AbstractAutopilot):
  
      def print_status(self):
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
@@ -163,7 +173,7 @@ index 52a5b91..6d8033b 100644
 +        system_status = getattr(self._Vehicle, "system_status", None)
 +        self._status['state'] = getattr(system_status, "state", "")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
-+        print(
++        self._log(
 +            "AutopilotDronekit status "
 +            f"mode={self._status['mode']} armed={self._status['armed']} "
 +            f"altitude={self._status['altitude']} gps_fix={self._status['gps_fix']} "
@@ -172,6 +182,49 @@ index 52a5b91..6d8033b 100644
          return super(AutopilotDronekit, self).print_status()
  
  ###################################################################################
+diff --git a/src/HighLevelControl/AutoPilots/AutopilotBridge.py b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
+index 0ff27e3..f76d29e 100644
+--- a/src/HighLevelControl/AutoPilots/AutopilotBridge.py
++++ b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
+@@ -10,6 +10,7 @@ import sys
+ import threading
+ import time
+ import re
++import sys
+ 
+ ###################################################################################
+ # ------------------------- AutopilotBridge ----------------------------------
+@@ -30,6 +31,9 @@ class AutopilotBridge(object):
+     def _shutdown(self):
+         self.status_publisher.join()
+ 
++    def _log(self, message):
++        print(message, file=sys.stderr, flush=True)
++
+     def run(self):
+         """
+         feed input lines from the HLC to interpreter until shutdown.
+@@ -40,7 +44,7 @@ class AutopilotBridge(object):
+             try:
+                 self.interpret_command(line)
+             except Exception:
+-                print(sys.argv[0] + " something went wrong with the interpreter... ")
++                self._log(sys.argv[0] + " something went wrong with the interpreter...")
+                 self.autopilot.shutdown()
+         self._shutdown()
+ 
+@@ -87,9 +91,9 @@ class AutopilotBridge(object):
+                 # RTL
+                 self.autopilot.rtl()
+             else:
+-                print("AutopilotBridge:: unknown command")
++                self._log("AutopilotBridge:: unknown command")
+         else:
+-            print(str_command)
++            self._log(str_command)
+ 
+ # Test script
+ if __name__ == "__main__":
 diff --git a/src/HighLevelControl/AutoPilots/AutopilotFactory.py b/src/HighLevelControl/AutoPilots/AutopilotFactory.py
 index 63c9b8e..debec20 100644
 --- a/src/HighLevelControl/AutoPilots/AutopilotFactory.py
