@@ -30,6 +30,8 @@ class ScenarioNode(Node):
         self.declare_parameter('takeoff_timeout_sec', 30.0)
         self.declare_parameter('land_after_actions', True)
         self.declare_parameter('landing_timeout_sec', 30.0)
+        self.declare_parameter('landed_altitude_m', 0.3)
+        self.declare_parameter('landing_touchdown_grace_sec', 8.0)
         self.declare_parameter('stop_after_actions_sec', 1.0)
         self.declare_parameter('scenario_name', 'axis_sweep')
         self.declare_parameter('scripted_actions', ['wait:1.0'])
@@ -45,6 +47,8 @@ class ScenarioNode(Node):
         self._takeoff_timeout_sec = float(self.get_parameter('takeoff_timeout_sec').value)
         self._land_after_actions = bool(self.get_parameter('land_after_actions').value)
         self._landing_timeout_sec = float(self.get_parameter('landing_timeout_sec').value)
+        self._landed_altitude_m = float(self.get_parameter('landed_altitude_m').value)
+        self._landing_touchdown_grace_sec = float(self.get_parameter('landing_touchdown_grace_sec').value)
         self._stop_after_actions_sec = float(self.get_parameter('stop_after_actions_sec').value)
         self._scenario_name = str(self.get_parameter('scenario_name').value)
         self._actions = [
@@ -62,6 +66,7 @@ class ScenarioNode(Node):
         self._ready_observed_sec: Optional[float] = None
         self._takeoff_sent = False
         self._landing_sent = False
+        self._landing_touchdown_sec: Optional[float] = None
         self._finished = False
         self._failed = False
 
@@ -161,6 +166,7 @@ class ScenarioNode(Node):
             return
         if self._land_after_actions:
             if not self._landing_sent:
+                self._landing_touchdown_sec = None
                 self._io.publish_operator_command(OpCom.OP_COMMAND_LAND)
                 self._landing_sent = True
                 self.get_logger().info('Published landing command')
@@ -170,12 +176,36 @@ class ScenarioNode(Node):
 
     def _handle_landing(self, now_sec: float) -> None:
         self._io.publish_zero()
-        if self._world_model.is_landed(now_sec, self._telemetry_timeout_sec):
+        if self._world_model.is_landed(now_sec, self._telemetry_timeout_sec, self._landed_altitude_m):
             self._finish(now_sec)
             return
+        telemetry = self._world_model.telemetry
+        if self._world_model.telemetry_is_fresh(now_sec, self._telemetry_timeout_sec):
+            if telemetry.altitude <= self._landed_altitude_m and self._landing_touchdown_sec is None:
+                self._landing_touchdown_sec = now_sec
+                self.get_logger().info(
+                    f'Touchdown detected at altitude={telemetry.altitude:.2f}m while waiting for disarm'
+                )
+            if self._landing_touchdown_sec is not None:
+                touchdown_elapsed_sec = now_sec - self._landing_touchdown_sec
+                if touchdown_elapsed_sec <= self._landing_touchdown_grace_sec:
+                    return
+                self._fail(
+                    now_sec,
+                    (
+                        f'Landing reached ground but stayed armed for {touchdown_elapsed_sec:.1f}s '
+                        f'(grace {self._landing_touchdown_grace_sec:.1f}s)'
+                    ),
+                )
+                return
         if (now_sec - self._phase.started_sec) > self._landing_timeout_sec:
-            self.get_logger().warning('Landing timeout elapsed; finishing scenario anyway')
-            self._finish(now_sec)
+            self._fail(
+                now_sec,
+                (
+                    f'Landing timeout elapsed after {self._landing_timeout_sec:.1f}s '
+                    f'at altitude={telemetry.altitude:.2f}m armed={telemetry.armed}'
+                ),
+            )
 
     def _set_phase(self, name: str, now_sec: float) -> None:
         self._phase = ScenarioPhase(name=name, started_sec=now_sec)

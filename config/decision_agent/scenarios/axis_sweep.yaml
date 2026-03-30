@@ -8,7 +8,9 @@
     takeoff_altitude_m: 3.0
     takeoff_timeout_sec: 35.0
     land_after_actions: true
-    landing_timeout_sec: 35.0
+    landing_timeout_sec: 45.0
+    landed_altitude_m: 0.3
+    landing_touchdown_grace_sec: 8.0
     stop_after_actions_sec: 1.5
     scenario_name: axis_sweep
     scripted_actions:
