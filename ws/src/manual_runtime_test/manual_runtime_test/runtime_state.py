@@ -96,6 +96,13 @@ class RuntimeState:
             return False
         return (now_sec - self.last_telemetry_time) <= timeout_sec
 
+    def has_complete_status_snapshot(self, now_sec: float, timeout_sec: float) -> bool:
+        return (
+            self.mc_state is not None and
+            self.hlc_state is not None and
+            self.telemetry_is_fresh(now_sec, timeout_sec)
+        )
+
     def is_takeoff_ready(self, now_sec: Optional[float] = None, telemetry_timeout_sec: Optional[float] = None) -> bool:
         if self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY:
             return True

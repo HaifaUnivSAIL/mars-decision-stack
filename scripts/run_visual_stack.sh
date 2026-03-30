@@ -501,4 +501,8 @@ if [ "${visual_gui}" = '1' ]; then
 else
   printf 'Gazebo is running headlessly in %s.\n' "${STACK_NAME}-visual-sim"
 fi
+if [ "${RUN_VISUAL_STACK_QUIET_HINTS:-0}" != '1' ]; then
+  printf 'This command only starts the stack and GUI. It does not open keyboard control.\n'
+  printf 'For keyboard flight control, run %s\n' "${ROOT_DIR}/scripts/run_visual_teleop.sh"
+fi
 printf 'Open a dev shell with %s\n' "${ROOT_DIR}/scripts/dev_shell.sh"

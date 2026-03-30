@@ -1,5 +1,5 @@
 diff --git a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
-index 52a5b91..01250a6 100644
+index 52a5b91..6e6cf36 100644
 --- a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 +++ b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 @@ -6,9 +6,15 @@
@@ -31,7 +31,7 @@ index 52a5b91..01250a6 100644
          # A lock for guarding the vehicle since it handles its own connection
          self._lock = threading.Lock()
 +        self._force_arm = bool(force_arm)
-+        self._log(
++        self._info(
 +            f"AutopilotDronekit connecting to target_address={target_address} "
 +            f"baud_rate={baud_rate} force_arm={self._force_arm}"
 +        )
@@ -54,32 +54,38 @@ index 52a5b91..01250a6 100644
                  connected = True
              except:
 -                print(sys.exc_info()[0])
-+                self._log(f"AutopilotDronekit connection retry after error={sys.exc_info()[0]}")
++                self._warn(f"AutopilotDronekit connection retry after error={sys.exc_info()[0]}")
                  if (time.time() - time_start) < 60:
                      continue
                  else:
-@@ -50,6 +70,10 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -50,6 +70,16 @@ class AutopilotDronekit(AbstractAutopilot):
          self._lock.release()  # ---------------------------------- Release ------------------------------------
          if not connected:
              raise RuntimeError("AutopilotDronekit.py failed to establish Vehicle Communication.")
-+        self._log("AutopilotDronekit connection established")
++        self._info("AutopilotDronekit connection established")
 +
-+    def _log(self, message):
-+        print(message, file=sys.stderr, flush=True)
++    def _info(self, message):
++        print(f"INFO:{message}", file=sys.stderr, flush=True)
++
++    def _warn(self, message):
++        print(f"WARNING:{message}", file=sys.stderr, flush=True)
++
++    def _error(self, message):
++        print(f"ERROR:{message}", file=sys.stderr, flush=True)
  
      ###################################################################################
      # ----------------------- AbstractAutopilot Interface Methods --------------------#
-@@ -62,31 +86,48 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -62,31 +92,48 @@ class AutopilotDronekit(AbstractAutopilot):
          super(AutopilotDronekit, self).shutdown()
  
      def ready2takeoff(self):
-+        self._log("AutopilotDronekit ready2takeoff: setting mode GUIDED")
++        self._info("AutopilotDronekit ready2takeoff: setting mode GUIDED")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("GUIDED")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def arm(self):
-+        self._log(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
++        self._info(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
 -        self._Vehicle.armed = True
 +        if self._force_arm:
@@ -97,37 +103,37 @@ index 52a5b91..01250a6 100644
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def takeoff(self, dAltitude):
-+        self._log(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
++        self._info(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.simple_takeoff(dAltitude)
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def land(self):
-+        self._log("AutopilotDronekit land requested")
++        self._info("AutopilotDronekit land requested")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("LAND")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def rtl(self):
-+        self._log("AutopilotDronekit rtl requested")
++        self._info("AutopilotDronekit rtl requested")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("RTL")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_velocity_body_frame(self, forward, right, down):
-+        self._log(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
++        self._info(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
          # print(dForward)
          msg = self._Vehicle.message_factory.set_position_target_local_ned_encode(
              0,  # time_boot_ms (not used)
-@@ -102,6 +143,7 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -102,6 +149,7 @@ class AutopilotDronekit(AbstractAutopilot):
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_yaw_rate(self, deg_per_sec):
-+        self._log(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
++        self._info(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
          # print(dDegPerSec)
          rotation_direction = 1
          if (0 > deg_per_sec):
-@@ -122,25 +164,43 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -122,25 +170,43 @@ class AutopilotDronekit(AbstractAutopilot):
  
      def print_status(self):
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
@@ -173,7 +179,7 @@ index 52a5b91..01250a6 100644
 +        system_status = getattr(self._Vehicle, "system_status", None)
 +        self._status['state'] = getattr(system_status, "state", "")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
-+        self._log(
++        self._info(
 +            "AutopilotDronekit status "
 +            f"mode={self._status['mode']} armed={self._status['armed']} "
 +            f"altitude={self._status['altitude']} gps_fix={self._status['gps_fix']} "
@@ -183,7 +189,7 @@ index 52a5b91..01250a6 100644
  
  ###################################################################################
 diff --git a/src/HighLevelControl/AutoPilots/AutopilotBridge.py b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
-index 0ff27e3..f76d29e 100644
+index 0ff27e3..052ebdc 100644
 --- a/src/HighLevelControl/AutoPilots/AutopilotBridge.py
 +++ b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
 @@ -10,6 +10,7 @@ import sys
@@ -199,7 +205,7 @@ index 0ff27e3..f76d29e 100644
          self.status_publisher.join()
  
 +    def _log(self, message):
-+        print(message, file=sys.stderr, flush=True)
++        print(f"ERROR:{message}", file=sys.stderr, flush=True)
 +
      def run(self):
          """
@@ -252,10 +258,36 @@ index 87b5cfb..4d8a154 100644
 +future
  pyserial
 diff --git a/src/HighLevelControl/Autopilot.cpp b/src/HighLevelControl/Autopilot.cpp
-index 1f65118..255e8a2 100644
+index 1f65118..8c1093e 100644
 --- a/src/HighLevelControl/Autopilot.cpp
 +++ b/src/HighLevelControl/Autopilot.cpp
-@@ -29,6 +29,10 @@ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher*
+@@ -14,6 +14,25 @@
+ #include <StringMessage.h>
+ #include <GetTimeString.h>
+ #include <stdexcept>
++
++namespace
++{
++bool StartsWith(const std::string& value, const std::string& prefix)
++{
++	return value.rfind(prefix, 0) == 0;
++}
++
++bool ShouldPublishAsPlatformError(const std::string& line)
++{
++	return StartsWith(line, "CRITICAL:") ||
++		StartsWith(line, "ERROR:") ||
++		StartsWith(line, "WARNING:") ||
++		StartsWith(line, "Traceback") ||
++		(std::string::npos != line.find("RuntimeError")) ||
++		(std::string::npos != line.find("couldn't initialize")) ||
++		(std::string::npos != line.find("Link timeout, no heartbeat"));
++}
++}
+ //--------------------------------------------------------------------------------
+ 
+ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher* pLlcErrorPublisher,
+@@ -29,6 +48,10 @@ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher*
  	m_dTargetAltitude = ptArgs.get<double>("altitude");
  	m_dLowBatVoltage = ptArgs.get<double>("low_bat_voltage");
  	m_strExecutable = "run_autopilot.py";
@@ -266,7 +298,21 @@ index 1f65118..255e8a2 100644
  
  	m_pThreadWriteToLlc = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
  	m_pThreadReadFromLlcErr  = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
-@@ -115,7 +119,9 @@ int Autopilot::operator()()
+@@ -74,8 +97,11 @@ void Autopilot::HandleErrorMessages()
+ 		else
+ 		{
+ 			std::cout << AlateUtils::GetTimeString() << "Autopilot:: " << strLine << std::endl;
+-			StringMessage msg(strLine);
+-			m_pLlcErrorPublisher->Publish(msg);
++			if (ShouldPublishAsPlatformError(strLine))
++			{
++				StringMessage msg(strLine);
++				m_pLlcErrorPublisher->Publish(msg);
++			}
+ 		}
+ 	}
+ }
+@@ -115,7 +141,9 @@ int Autopilot::operator()()
  
  	try
  	{
@@ -277,7 +323,7 @@ index 1f65118..255e8a2 100644
  				m_strExecutable,
  				m_strArgs,
  				boost::process::std_out > _ipstream,
-@@ -269,6 +275,7 @@ void Autopilot::SetYawRate(double dDegPerSec)
+@@ -269,6 +297,7 @@ void Autopilot::SetYawRate(double dDegPerSec)
  
  void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction)
  {
@@ -285,7 +331,7 @@ index 1f65118..255e8a2 100644
  	m_opstream << m_strToken << eAction << std::endl;
  }
  
-@@ -276,6 +283,7 @@ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction
+@@ -276,6 +305,7 @@ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction
  
  void Autopilot::PostTakeoff()
  {
@@ -293,7 +339,7 @@ index 1f65118..255e8a2 100644
  	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionTakeoff << " " << m_dTargetAltitude << std::endl;
  }
  
-@@ -283,6 +291,8 @@ void Autopilot::PostTakeoff()
+@@ -283,6 +313,8 @@ void Autopilot::PostTakeoff()
  
  void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDown)
  {
@@ -302,7 +348,7 @@ index 1f65118..255e8a2 100644
  	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionVelocityBodyFrame << " " << dForward << " " << dRight << " " << dDown << std::endl;
  }
  
-@@ -290,6 +300,7 @@ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDo
+@@ -290,6 +322,7 @@ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDo
  
  void Autopilot::PostYawRate(double dDegPerSec)
  {
@@ -346,7 +392,7 @@ index dca2b20..4ff32e3 100644
  		catch (std::exception& e)
  		{
 diff --git a/src/HighLevelControl/HlcStateMachine.h b/src/HighLevelControl/HlcStateMachine.h
-index ac8d9de..06703d2 100644
+index ac8d9de..b459518 100644
 --- a/src/HighLevelControl/HlcStateMachine.h
 +++ b/src/HighLevelControl/HlcStateMachine.h
 @@ -262,7 +262,10 @@ private:
@@ -373,6 +419,14 @@ index ac8d9de..06703d2 100644
  				fsm.GetAutoPilot()->Takeoff();
  			}
  		};
+@@ -591,6 +595,7 @@ private:
+ 		boost::msm::front::Row < Manual			 	, EventAutoPilot				, Ready						, GetReadyForTakeoff		, IsAutoPilotLanded>,
+ 		boost::msm::front::Row < Manual 			, EventMcState					, boost::msm::front::none	, boost::msm::front::none	, IsMcStateManual>,
+ 		//-----------------------------------------+-------------------------------+---------------------------+---------------------------+-------------------------+
++		boost::msm::front::Row < ReturnToLaunch	 	, EventMcState					, Landing					, boost::msm::front::none	, IsMcStateLanding>,
+ 		boost::msm::front::Row < ReturnToLaunch	 	, EventAutoPilot				, Ready						, GetReadyForTakeoff		, IsAutoPilotLanded>
+ 		//-----------------------------------------+-------------------------------+---------------------------+---------------------------+-------------------------+
+ 		> {};
 diff --git a/src/MissionControl/MissionControl.cpp b/src/MissionControl/MissionControl.cpp
 index 09cac67..712aeaa 100644
 --- a/src/MissionControl/MissionControl.cpp
@@ -397,3 +451,15 @@ index 09cac67..712aeaa 100644
  
  		try
  		{
+diff --git a/src/MissionControl/MissionControlStateMachine.h b/src/MissionControl/MissionControlStateMachine.h
+index 9794596..3d4de11 100644
+--- a/src/MissionControl/MissionControlStateMachine.h
++++ b/src/MissionControl/MissionControlStateMachine.h
+@@ -430,6 +430,7 @@ public:
+ 			boost::msm::front::Row < Landing 			, EventHlcState		, Standby			, boost::msm::front::none , IsHlcStateReady>,
+ 			boost::msm::front::Row < Landing 			, EventHlcState		, Manual			, boost::msm::front::none , IsHlcStateManual>,
+             //-----------------------------------------+--------------------+-------------------+-------------------------+--------------------+
++			boost::msm::front::Row < RTL	 			, EventRc			, Landing			, boost::msm::front::none , IsRcLand>,
+ 			boost::msm::front::Row < RTL	 			, EventHlcState		, Standby			, boost::msm::front::none , IsHlcStateReady>,
+ 			boost::msm::front::Row < RTL	 			, EventHlcState		, Manual			, boost::msm::front::none , IsHlcStateManual>,
+             //-----------------------------------------+--------------------+-------------------+-------------------------+--------------------+

@@ -1,4 +1,5 @@
 from geometry_msgs.msg import Twist
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from ros_alate_interfaces.msg import HlcPlatformError, HlcState, HlcTelemetry, McState, OpCom
 
 from .runtime_state import TelemetryState
@@ -10,9 +11,14 @@ class ManualRuntimeRosIo:
         self._runtime_state = runtime_state
         self._velocity_pub = node.create_publisher(Twist, '/alate_input_velocity', 10)
         self._opcom_pub = node.create_publisher(OpCom, '/alate_input_operator_command', 10)
+        state_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
 
-        node.create_subscription(McState, '/alate_output_mission_control_state', self._on_mc_state, 10)
-        node.create_subscription(HlcState, '/alate_output_high_level_control_state', self._on_hlc_state, 10)
+        node.create_subscription(McState, '/alate_output_mission_control_state', self._on_mc_state, state_qos)
+        node.create_subscription(HlcState, '/alate_output_high_level_control_state', self._on_hlc_state, state_qos)
         node.create_subscription(HlcTelemetry, '/alate_output_high_level_control_telemetry', self._on_telemetry, 10)
         node.create_subscription(HlcPlatformError, '/alate_output_high_level_control_platform_errors', self._on_error, 10)
 

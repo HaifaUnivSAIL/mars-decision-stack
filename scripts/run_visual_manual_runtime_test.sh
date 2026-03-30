@@ -73,7 +73,7 @@ ensure_visual_stack() {
   fi
 
   printf 'Refreshing the visual stack in %s mode so the latest camera/config values are applied.\n' "${visual_mode}"
-  "${ROOT_DIR}/scripts/run_visual_stack.sh" ${requested_arg:+"${requested_arg}"}
+  RUN_VISUAL_STACK_QUIET_HINTS=1 "${ROOT_DIR}/scripts/run_visual_stack.sh" ${requested_arg:+"${requested_arg}"}
 }
 
 ensure_visual_stack

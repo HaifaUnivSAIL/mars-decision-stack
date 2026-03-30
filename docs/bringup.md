@@ -95,7 +95,7 @@ current run directory.
 To run the keyboard-controlled visual runtime test:
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh
+./scripts/run_visual_teleop.sh
 ```
 
 This command also refreshes the visual stack first so the latest
@@ -105,5 +105,5 @@ teleoperation starts.
 To run the keyboard-controlled visual runtime test in calibration mode:
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh --calib
+./scripts/run_visual_teleop.sh --calib
 ```

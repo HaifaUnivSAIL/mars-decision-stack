@@ -8,4 +8,7 @@ if ! docker ps --format '{{.Names}}' | grep -qx "${STACK_NAME}-decision-dev"; th
   exit 1
 fi
 
+printf 'Opening a development shell only.\n'
+printf 'For keyboard flight control, run %s instead.\n' "${ROOT_DIR}/scripts/run_visual_teleop.sh"
+
 docker exec -it "${STACK_NAME}-decision-dev" bash

@@ -68,14 +68,18 @@ additional spawn implementation is required for the current simulation path.
 ## Run the Interactive Visual Test
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh
+./scripts/run_visual_teleop.sh
 ```
 
 Calibration mode:
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh --calib
+./scripts/run_visual_teleop.sh --calib
 ```
+
+`run_visual_teleop.sh` is the short operator-facing alias for
+`run_visual_manual_runtime_test.sh`. It is the recommended command when you
+want the GUI and keyboard control together.
 
 The script:
 
@@ -120,7 +124,7 @@ By default, motion commands latch until a new direction is requested or
 controller instead of a short pulse generator.
 
 If you stop the GUI window but leave the visual stack running, rerunning
-`./scripts/run_visual_manual_runtime_test.sh` will now relaunch the GUI client
+`./scripts/run_visual_teleop.sh` will now relaunch the GUI client
 before starting keyboard control.
 
 ## Validate the Visual Stack

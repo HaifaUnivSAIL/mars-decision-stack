@@ -57,6 +57,7 @@ class KeyboardTeleopNode(Node):
         self.declare_parameter('telemetry_timeout_sec', 2.0)
         self.declare_parameter('require_ready_state_for_takeoff', True)
         self.declare_parameter('status_period_sec', 1.0)
+        self.declare_parameter('startup_snapshot_timeout_sec', 5.0)
         self.declare_parameter('motion_debug_window_sec', 3.0)
         self.declare_parameter('scripted_action_interval_sec', 0.25)
         self.declare_parameter('scripted_actions', [''])
@@ -69,6 +70,7 @@ class KeyboardTeleopNode(Node):
         self._telemetry_timeout_sec = float(self.get_parameter('telemetry_timeout_sec').value)
         self._require_ready_state_for_takeoff = bool(self.get_parameter('require_ready_state_for_takeoff').value)
         self._status_period_sec = max(float(self.get_parameter('status_period_sec').value), 0.1)
+        self._startup_snapshot_timeout_sec = max(float(self.get_parameter('startup_snapshot_timeout_sec').value), 0.5)
         self._motion_debug_window_sec = max(float(self.get_parameter('motion_debug_window_sec').value), 0.0)
         self._scripted_action_interval_sec = max(float(self.get_parameter('scripted_action_interval_sec').value), 0.0)
         self._scripted_actions = [
@@ -89,6 +91,11 @@ class KeyboardTeleopNode(Node):
         self._last_status_sec = 0.0
         self._next_script_action_sec = self._now_sec()
         self._script_index = 0
+        self._last_reported_error: Optional[str] = None
+        self._startup_started_sec = self._next_script_action_sec
+        self._initial_status_reported = False
+        self._waiting_for_snapshot_reported = False
+        self._last_logged_motion_signature: Optional[tuple[str, float, float, float]] = None
 
         self.get_logger().info('manual_runtime_test started')
         self.get_logger().info(render_help())
@@ -142,48 +149,49 @@ class KeyboardTeleopNode(Node):
             return
 
         action_text = self._scripted_actions[self._script_index]
-        self._script_index += 1
         action = parse_script_action(action_text, self._linear_step_x, self._linear_step_y, self._linear_step_z)
 
         if action.kind == 'wait':
             self.get_logger().info(f'Scripted action: {action.label}')
+            self._script_index += 1
             self._next_script_action_sec = now_sec + action.wait_sec
             return
 
-        self._apply_action(action)
+        if self._apply_action(action):
+            self._script_index += 1
         self._next_script_action_sec = now_sec + self._scripted_action_interval_sec
 
-    def _apply_action(self, action) -> None:
+    def _apply_action(self, action) -> bool:
         now_sec = self._now_sec()
 
         if action.kind == 'help':
             self.get_logger().info(render_help())
-            return
+            return True
 
         if action.kind == 'quit':
             self.get_logger().info('Quit requested')
             self._running = False
-            return
+            return True
 
         if action.kind == 'stop':
             self._current_linear_x = 0.0
             self._current_linear_y = 0.0
             self._current_linear_z = 0.0
             self._last_motion_command_sec = None
+            self._last_logged_motion_signature = None
             self._runtime_state.mark_command_reference(action.label, now_sec)
             self._io.publish_zero()
             self._last_publish_sec = now_sec
             self.get_logger().info('Published stop command')
-            return
+            return True
 
         if action.kind == 'operator_command':
-            self._publish_operator_command(action.operator_command)
-            return
+            return self._publish_operator_command(action.operator_command)
 
         if action.kind == 'velocity':
             if not self._runtime_state.telemetry_is_fresh(now_sec, self._telemetry_timeout_sec):
                 self.get_logger().warning('Ignored motion command because telemetry is stale or unavailable')
-                return
+                return False
 
             self._current_linear_x = action.linear_x
             self._current_linear_y = action.linear_y
@@ -192,14 +200,25 @@ class KeyboardTeleopNode(Node):
             self._runtime_state.mark_command_reference(action.label, now_sec)
             self._io.publish_velocity(self._current_linear_x, self._current_linear_y, self._current_linear_z)
             self._last_publish_sec = now_sec
-            self.get_logger().info(
-                f'Published motion command {action.label}: '
-                f'linear_x={self._current_linear_x:.2f} '
-                f'linear_y={self._current_linear_y:.2f} '
-                f'linear_z={self._current_linear_z:.2f}'
+            motion_signature = (
+                action.label,
+                self._current_linear_x,
+                self._current_linear_y,
+                self._current_linear_z,
             )
+            if motion_signature != self._last_logged_motion_signature:
+                self.get_logger().info(
+                    f'Published motion command {action.label}: '
+                    f'linear_x={self._current_linear_x:.2f} '
+                    f'linear_y={self._current_linear_y:.2f} '
+                    f'linear_z={self._current_linear_z:.2f}'
+                )
+                self._last_logged_motion_signature = motion_signature
+            return True
 
-    def _publish_operator_command(self, operator_command: str) -> None:
+        return True
+
+    def _publish_operator_command(self, operator_command: str) -> bool:
         now_sec = self._now_sec()
         if operator_command == 'takeoff' and self._require_ready_state_for_takeoff and not self._runtime_state.is_takeoff_ready(
             now_sec, self._telemetry_timeout_sec
@@ -208,7 +227,7 @@ class KeyboardTeleopNode(Node):
                 'Ignored takeoff command because runtime is not ready '
                 f'(MC={self._runtime_state.mc_state_name()} HLC={self._runtime_state.hlc_state_name()})'
             )
-            return
+            return False
 
         mapping = {
             'takeoff': OpCom.OP_COMMAND_TAKEOFF,
@@ -218,6 +237,7 @@ class KeyboardTeleopNode(Node):
         self._io.publish_operator_command(mapping[operator_command])
         self.get_logger().info(f'Published operator command: {operator_command}')
         self._last_publish_sec = now_sec
+        return True
 
     def _publish_motion(self, now_sec: float) -> None:
         publish_period_sec = 1.0 / self._publish_rate_hz
@@ -241,6 +261,27 @@ class KeyboardTeleopNode(Node):
             self._last_publish_sec = now_sec
 
     def _print_status(self, now_sec: float) -> None:
+        if not self._initial_status_reported:
+            if self._runtime_state.has_complete_status_snapshot(now_sec, self._telemetry_timeout_sec):
+                self._initial_status_reported = True
+                self._waiting_for_snapshot_reported = False
+            else:
+                if (
+                    not self._waiting_for_snapshot_reported and
+                    (now_sec - self._startup_started_sec) >= self._status_period_sec
+                ):
+                    self.get_logger().info('Waiting for initial runtime snapshot (MC/HLC + telemetry)...')
+                    self._waiting_for_snapshot_reported = True
+                if (now_sec - self._startup_started_sec) < self._startup_snapshot_timeout_sec:
+                    return
+                if not self._waiting_for_snapshot_reported:
+                    self.get_logger().info('Waiting for initial runtime snapshot (MC/HLC + telemetry)...')
+                    self._waiting_for_snapshot_reported = True
+                self.get_logger().warning(
+                    'Startup snapshot timeout elapsed; showing partial runtime status while subscriptions continue to settle'
+                )
+                self._initial_status_reported = True
+
         if (now_sec - self._last_status_sec) < self._status_period_sec:
             return
         self._last_status_sec = now_sec
@@ -252,7 +293,11 @@ class KeyboardTeleopNode(Node):
             )
         )
         if self._runtime_state.last_error:
-            self.get_logger().warning(f'Latest platform error: {self._runtime_state.last_error}')
+            if self._runtime_state.last_error != self._last_reported_error:
+                self.get_logger().warning(f'Latest platform error: {self._runtime_state.last_error}')
+                self._last_reported_error = self._runtime_state.last_error
+        else:
+            self._last_reported_error = None
 
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9

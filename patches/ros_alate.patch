@@ -355,10 +355,10 @@ index b2c830e..5cbfc5b 100644
      use_sim_time: false
 -
 diff --git a/src/adapter.cpp b/src/adapter.cpp
-index d67292d..0131b17 100644
+index d67292d..bb67ca7 100644
 --- a/src/adapter.cpp
 +++ b/src/adapter.cpp
-@@ -15,151 +15,203 @@ limitations under the License.
+@@ -15,151 +15,204 @@ limitations under the License.
  */
  
  #include "ros_alate/adapter.h"
@@ -475,11 +475,12 @@ index d67292d..0131b17 100644
 +  rclcpp::Parameter param_proxy_endpoint_for_subscribing = this->get_parameter("proxy_endpoint_for_subscribing");
 +  rclcpp::Parameter param_proxy_endpoint_for_publishing = this->get_parameter("proxy_endpoint_for_publishing");
 +
++  auto state_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
 +  m_pPublisherMcState = this->create_publisher<ros_alate_interfaces::msg::McState>(
-+    "alate_output_mission_control_state", 10
++    "alate_output_mission_control_state", state_qos
 +  );
 +  m_pPublisherHlcState = this->create_publisher<ros_alate_interfaces::msg::HlcState>(
-+    "alate_output_high_level_control_state", 10
++    "alate_output_high_level_control_state", state_qos
 +  );
 +  m_pPublisherHlcTelemetry = this->create_publisher<ros_alate_interfaces::msg::HlcTelemetry>(
 +    "alate_output_high_level_control_telemetry", 10

@@ -112,7 +112,7 @@ if [ "${visual_mode}" = "calib" ]; then
   requested_visual_arg="--calib"
 fi
 
-VISUAL_GUI="${VISUAL_GUI:-0}" "${ROOT_DIR}/scripts/run_visual_stack.sh" "${requested_visual_arg}"
+RUN_VISUAL_STACK_QUIET_HINTS=1 VISUAL_GUI="${VISUAL_GUI:-0}" "${ROOT_DIR}/scripts/run_visual_stack.sh" "${requested_visual_arg}"
 
 run_dir_file="${LOG_DIR}/runtime/visual.current_run_dir"
 if [ ! -f "${run_dir_file}" ]; then

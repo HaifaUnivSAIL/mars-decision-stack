@@ -167,7 +167,7 @@ applied deterministically.
 ### Run keyboard control against the visual stack
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh
+./scripts/run_visual_teleop.sh
 ```
 
 This command also refreshes the visual stack first, so the current
@@ -177,7 +177,7 @@ teleoperation starts.
 ### Run keyboard control against the calibration visual stack
 
 ```bash
-./scripts/run_visual_manual_runtime_test.sh --calib
+./scripts/run_visual_teleop.sh --calib
 ```
 
 This workflow uses the same ROS command interface as local decision modules, so
