@@ -5,6 +5,8 @@ from typing import Optional
 
 MC_STATE_STANDBY = 2
 HLC_STATE_READY = 4
+HLC_STATE_AIRBORNE = 7
+HLC_STATE_MANUAL = 9
 
 MC_STATE_NAMES = {
     0: 'None',
@@ -91,6 +93,11 @@ class RuntimeState:
             state=self.telemetry.state,
         )
 
+    def clear_command_reference(self) -> None:
+        self.command_reference_telemetry = None
+        self.last_command_label = ''
+        self.last_command_time = None
+
     def telemetry_is_fresh(self, now_sec: float, timeout_sec: float) -> bool:
         if self.last_telemetry_time is None:
             return False
@@ -104,16 +111,10 @@ class RuntimeState:
         )
 
     def is_takeoff_ready(self, now_sec: Optional[float] = None, telemetry_timeout_sec: Optional[float] = None) -> bool:
-        if self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY:
-            return True
+        return self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY
 
-        if now_sec is None or telemetry_timeout_sec is None:
-            return False
-
-        if not self.telemetry_is_fresh(now_sec, telemetry_timeout_sec):
-            return False
-
-        return self.telemetry.state.upper() == 'STANDBY'
+    def motion_commands_allowed(self) -> bool:
+        return self.hlc_state in {HLC_STATE_AIRBORNE, HLC_STATE_MANUAL}
 
     def mc_state_name(self) -> str:
         return MC_STATE_NAMES.get(self.mc_state, str(self.mc_state))

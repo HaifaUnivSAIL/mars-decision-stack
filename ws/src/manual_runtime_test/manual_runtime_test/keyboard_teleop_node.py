@@ -192,6 +192,12 @@ class KeyboardTeleopNode(Node):
             if not self._runtime_state.telemetry_is_fresh(now_sec, self._telemetry_timeout_sec):
                 self.get_logger().warning('Ignored motion command because telemetry is stale or unavailable')
                 return False
+            if not self._runtime_state.motion_commands_allowed():
+                self.get_logger().warning(
+                    'Ignored motion command because runtime is not in a motion-capable state '
+                    f'(MC={self._runtime_state.mc_state_name()} HLC={self._runtime_state.hlc_state_name()})'
+                )
+                return False
 
             self._current_linear_x = action.linear_x
             self._current_linear_y = action.linear_y
@@ -229,6 +235,11 @@ class KeyboardTeleopNode(Node):
             )
             return False
 
+        self._clear_active_motion(
+            now_sec,
+            reason=f'operator command: {operator_command}',
+            log_only_when_cleared=True,
+        )
         mapping = {
             'takeoff': OpCom.OP_COMMAND_TAKEOFF,
             'land': OpCom.OP_COMMAND_LAND,
@@ -245,6 +256,14 @@ class KeyboardTeleopNode(Node):
         if self._last_motion_command_sec is None:
             return
 
+        if not self._runtime_state.motion_commands_allowed():
+            self._clear_active_motion(
+                now_sec,
+                reason='runtime left motion-capable state',
+                log_only_when_cleared=True,
+            )
+            return
+
         if self._motion_hold_sec > 0.0 and (now_sec - self._last_motion_command_sec) > self._motion_hold_sec:
             if self._current_linear_x != 0.0 or self._current_linear_y != 0.0 or self._current_linear_z != 0.0:
                 self._current_linear_x = 0.0
@@ -259,6 +278,27 @@ class KeyboardTeleopNode(Node):
         if (now_sec - self._last_publish_sec) >= publish_period_sec:
             self._io.publish_velocity(self._current_linear_x, self._current_linear_y, self._current_linear_z)
             self._last_publish_sec = now_sec
+
+    def _clear_active_motion(self, now_sec: float, reason: str, log_only_when_cleared: bool = False) -> None:
+        had_motion = (
+            self._current_linear_x != 0.0 or
+            self._current_linear_y != 0.0 or
+            self._current_linear_z != 0.0 or
+            self._last_motion_command_sec is not None or
+            bool(self._runtime_state.last_command_label)
+        )
+
+        self._current_linear_x = 0.0
+        self._current_linear_y = 0.0
+        self._current_linear_z = 0.0
+        self._last_motion_command_sec = None
+        self._last_logged_motion_signature = None
+        self._runtime_state.clear_command_reference()
+        self._io.publish_zero()
+        self._last_publish_sec = now_sec
+
+        if not log_only_when_cleared or had_motion:
+            self.get_logger().info(f'Cleared active motion command due to {reason}')
 
     def _print_status(self, now_sec: float) -> None:
         if not self._initial_status_reported:
