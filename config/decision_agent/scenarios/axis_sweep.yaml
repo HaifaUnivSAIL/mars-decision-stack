@@ -1,4 +1,4 @@
-/policy_scenario:
+policy_scenario:
   ros__parameters:
     control_frequency_hz: 10.0
     telemetry_timeout_sec: 2.0

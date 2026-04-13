@@ -8,4 +8,4 @@ if [ -n "${VISUAL_RESOURCE_PATH_PREFIX:-}" ]; then
   export GZ_SIM_RESOURCE_PATH="${VISUAL_RESOURCE_PATH_PREFIX}:${GZ_SIM_RESOURCE_PATH:-}"
 fi
 
-exec gz sim -s -v4 -r "${VISUAL_WORLD}"
+gz sim -s -v4 -r "${VISUAL_WORLD}"

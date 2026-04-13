@@ -1,4 +1,4 @@
-/manual_runtime_test:
+manual_runtime_test:
   ros__parameters:
     linear_step_x: 0.3
     linear_step_y: 0.3

@@ -24,7 +24,6 @@ STACK_NAME = "mars-decision-stack"
 VISUAL_CONTAINER = f"{STACK_NAME}-visual-sim"
 DECISION_DEV_CONTAINER = f"{STACK_NAME}-decision-dev"
 GZ_PARTITION = "mars-decision-stack-gazebo"
-MAVLINK_ACTUATOR_ENDPOINT = "tcp:sitl:5763"
 SampleT = TypeVar("SampleT")
 
 
@@ -84,6 +83,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--duration", type=float, default=20.0, help="Capture duration in seconds.")
+    parser.add_argument("--drone", help="Optional drone id when the current visual stack is running in fleet mode.")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -92,16 +92,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-ACTUATOR_CAPTURE_CODE = """
+ACTUATOR_CAPTURE_CODE_TEMPLATE = """
 import sys
 import time
 from pymavlink import mavutil
 
 duration = float(sys.argv[1])
-m = mavutil.mavlink_connection("__ENDPOINT__", timeout=5)
+m = mavutil.mavlink_connection(sys.argv[2], timeout=5)
 hb = m.wait_heartbeat(timeout=10)
 if hb is None:
-    raise SystemExit("No heartbeat on __ENDPOINT__")
+    raise SystemExit(f"No heartbeat on {sys.argv[2]}")
 
 for _ in range(3):
     m.mav.request_data_stream_send(
@@ -146,7 +146,7 @@ while time.time() < deadline:
         f"{int(data.get('servo4_raw', 0))}",
         flush=True,
     )
-""".replace("__ENDPOINT__", MAVLINK_ACTUATOR_ENDPOINT)
+"""
 
 
 def load_runtime_manifest() -> dict:
@@ -160,6 +160,37 @@ def load_runtime_manifest() -> dict:
     manifest = json.loads(manifest_path.read_text())
     manifest["current_run_dir"] = str(current_run_dir)
     return manifest
+
+
+def resolve_runtime_target(manifest: dict, requested_drone: str) -> dict:
+    requested_drone = (requested_drone or "").strip()
+    if manifest.get("fleet"):
+        drones = manifest.get("drones", [])
+        if not drones:
+            raise RuntimeError("Fleet runtime manifest does not define any drones")
+        by_id = {drone["id"]: drone for drone in drones}
+        selected_id = requested_drone or manifest.get("active_drone_id") or drones[0]["id"]
+        if selected_id not in by_id:
+            raise RuntimeError(f"Unknown drone id {selected_id!r}. Available: {sorted(by_id)}")
+        drone = by_id[selected_id]
+        namespace = drone.get("namespace") or f"/{selected_id}"
+        return {
+            "drone_id": selected_id,
+            "namespace": namespace,
+            "runtime_model_name": drone["runtime_model_name"],
+            "mavlink_port": int(drone["mavlink_port"]),
+            "mavlink_endpoint": f"tcp:{drone['sitl_host']}:{int(drone['mavlink_port'])}",
+            "command_topic": f"{namespace}/alate_input_velocity",
+        }
+
+    return {
+        "drone_id": requested_drone,
+        "namespace": "",
+        "runtime_model_name": manifest["runtime_model_name"],
+        "mavlink_port": 5763,
+        "mavlink_endpoint": "tcp:sitl:5763",
+        "command_topic": "/alate_input_velocity",
+    }
 
 
 def container_is_running(container_name: str) -> bool:
@@ -293,14 +324,14 @@ def parse_pose_message(message_text: str, host_time_sec: float, runtime_model_na
     return None
 
 
-def start_command_capture(duration_sec: float) -> subprocess.Popen[str]:
+def start_command_capture(duration_sec: float, command_topic: str) -> subprocess.Popen[str]:
     cmd = (
         "docker exec "
         f"{DECISION_DEV_CONTAINER} "
         "bash -lc "
         "'source /opt/ros/humble/setup.bash && "
         "source /opt/ros2_ws/install/setup.bash && "
-        f"timeout {max(duration_sec + 2.0, 5.0):.1f} ros2 topic echo --csv /alate_input_velocity'"
+        f"timeout {max(duration_sec + 2.0, 5.0):.1f} ros2 topic echo --csv {command_topic}'"
     )
     return subprocess.Popen(
         ["/bin/bash", "-lc", cmd],
@@ -347,7 +378,7 @@ def start_pose_capture(duration_sec: float, pose_topic: str) -> subprocess.Popen
     )
 
 
-def start_actuator_capture(duration_sec: float) -> subprocess.Popen[str]:
+def start_actuator_capture(duration_sec: float, mavlink_endpoint: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             "docker",
@@ -356,8 +387,9 @@ def start_actuator_capture(duration_sec: float) -> subprocess.Popen[str]:
             "python3",
             "-u",
             "-c",
-            ACTUATOR_CAPTURE_CODE,
+            ACTUATOR_CAPTURE_CODE_TEMPLATE,
             f"{duration_sec:.1f}",
+            mavlink_endpoint,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -941,6 +973,7 @@ def build_comparison_rows(
 def main() -> int:
     args = parse_args()
     manifest = load_runtime_manifest()
+    target = resolve_runtime_target(manifest, args.drone or "")
     if not container_is_running(VISUAL_CONTAINER):
         raise RuntimeError(f"{VISUAL_CONTAINER} is not running. Start the visual stack first.")
     if not container_is_running(DECISION_DEV_CONTAINER):
@@ -951,15 +984,15 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     imu_topic = (
-        f"/world/{manifest['runtime_world_name']}/model/{manifest['runtime_model_name']}"
+        f"/world/{manifest['runtime_world_name']}/model/{target['runtime_model_name']}"
         "/model/iris_with_standoffs/link/imu_link/sensor/imu_sensor/imu"
     )
     pose_topic = f"/world/{manifest['runtime_world_name']}/dynamic_pose/info"
 
-    print(f"Capturing policy-equivalent input from /alate_input_velocity for {args.duration:.1f}s")
+    print(f"Capturing policy-equivalent input from {target['command_topic']} for {args.duration:.1f}s")
     print(f"Capturing Gazebo IMU from {imu_topic}")
     print(f"Capturing Gazebo pose stream from {pose_topic}")
-    print(f"Capturing MAVLink SERVO_OUTPUT_RAW from {MAVLINK_ACTUATOR_ENDPOINT}")
+    print(f"Capturing MAVLink SERVO_OUTPUT_RAW from {target['mavlink_endpoint']}")
     print(f"Output directory: {output_dir}")
 
     command_queue: queue.Queue[CommandSample] = queue.Queue()
@@ -967,15 +1000,15 @@ def main() -> int:
     pose_queue: queue.Queue[PoseSample] = queue.Queue()
     actuator_queue: queue.Queue[ActuatorSample] = queue.Queue()
 
-    command_proc = start_command_capture(args.duration)
+    command_proc = start_command_capture(args.duration, target["command_topic"])
     imu_proc = start_imu_capture(args.duration, imu_topic)
     pose_proc = start_pose_capture(args.duration, pose_topic)
-    actuator_proc = start_actuator_capture(args.duration)
+    actuator_proc = start_actuator_capture(args.duration, target["mavlink_endpoint"])
 
     command_thread = threading.Thread(target=command_reader, args=(command_proc, command_queue), daemon=True)
     imu_thread = threading.Thread(target=imu_reader, args=(imu_proc, imu_queue), daemon=True)
     pose_thread = threading.Thread(
-        target=pose_reader, args=(pose_proc, pose_queue, manifest["runtime_model_name"]), daemon=True
+        target=pose_reader, args=(pose_proc, pose_queue, target["runtime_model_name"]), daemon=True
     )
     actuator_thread = threading.Thread(target=actuator_reader, args=(actuator_proc, actuator_queue), daemon=True)
     command_thread.start()

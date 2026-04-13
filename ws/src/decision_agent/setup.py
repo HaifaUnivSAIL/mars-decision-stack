@@ -23,6 +23,9 @@ setup(
         'console_scripts': [
             'policy_node = decision_agent.policy_node:main',
             'scenario_node = decision_agent.scenario_node:main',
+            'command_publisher = decision_agent.command_publisher:main',
+            'swarm_latency_recorder = decision_agent.swarm_latency_recorder:main',
+            'stack_ros_profiler = decision_agent.stack_ros_profiler:main',
         ],
     },
 )

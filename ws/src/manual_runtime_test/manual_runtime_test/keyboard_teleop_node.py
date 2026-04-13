@@ -1,3 +1,5 @@
+import json
+import os
 import select
 import sys
 import termios
@@ -55,6 +57,7 @@ class KeyboardTeleopNode(Node):
         self.declare_parameter('publish_rate_hz', 10.0)
         self.declare_parameter('motion_hold_sec', 0.0)
         self.declare_parameter('telemetry_timeout_sec', 2.0)
+        self.declare_parameter('motion_min_altitude_m', 0.5)
         self.declare_parameter('require_ready_state_for_takeoff', True)
         self.declare_parameter('status_period_sec', 1.0)
         self.declare_parameter('startup_snapshot_timeout_sec', 5.0)
@@ -68,6 +71,7 @@ class KeyboardTeleopNode(Node):
         self._publish_rate_hz = max(float(self.get_parameter('publish_rate_hz').value), 1.0)
         self._motion_hold_sec = max(float(self.get_parameter('motion_hold_sec').value), 0.0)
         self._telemetry_timeout_sec = float(self.get_parameter('telemetry_timeout_sec').value)
+        self._motion_min_altitude_m = max(float(self.get_parameter('motion_min_altitude_m').value), 0.0)
         self._require_ready_state_for_takeoff = bool(self.get_parameter('require_ready_state_for_takeoff').value)
         self._status_period_sec = max(float(self.get_parameter('status_period_sec').value), 0.1)
         self._startup_snapshot_timeout_sec = max(float(self.get_parameter('startup_snapshot_timeout_sec').value), 0.5)
@@ -96,6 +100,7 @@ class KeyboardTeleopNode(Node):
         self._initial_status_reported = False
         self._waiting_for_snapshot_reported = False
         self._last_logged_motion_signature: Optional[tuple[str, float, float, float]] = None
+        self._profile_enabled = os.getenv('STACK_PROFILE', '0') == '1'
 
         self.get_logger().info('manual_runtime_test started')
         self.get_logger().info(render_help())
@@ -183,6 +188,7 @@ class KeyboardTeleopNode(Node):
             self._io.publish_zero()
             self._last_publish_sec = now_sec
             self.get_logger().info('Published stop command')
+            self._profile('zero_command_published', reason='manual_stop')
             return True
 
         if action.kind == 'operator_command':
@@ -192,7 +198,7 @@ class KeyboardTeleopNode(Node):
             if not self._runtime_state.telemetry_is_fresh(now_sec, self._telemetry_timeout_sec):
                 self.get_logger().warning('Ignored motion command because telemetry is stale or unavailable')
                 return False
-            if not self._runtime_state.motion_commands_allowed():
+            if not self._runtime_state.motion_commands_allowed(self._motion_min_altitude_m):
                 self.get_logger().warning(
                     'Ignored motion command because runtime is not in a motion-capable state '
                     f'(MC={self._runtime_state.mc_state_name()} HLC={self._runtime_state.hlc_state_name()})'
@@ -206,6 +212,13 @@ class KeyboardTeleopNode(Node):
             self._runtime_state.mark_command_reference(action.label, now_sec)
             self._io.publish_velocity(self._current_linear_x, self._current_linear_y, self._current_linear_z)
             self._last_publish_sec = now_sec
+            self._profile(
+                'velocity_command_published',
+                label=action.label,
+                linear_x=self._current_linear_x,
+                linear_y=self._current_linear_y,
+                linear_z=self._current_linear_z,
+            )
             motion_signature = (
                 action.label,
                 self._current_linear_x,
@@ -248,6 +261,7 @@ class KeyboardTeleopNode(Node):
         self._io.publish_operator_command(mapping[operator_command])
         self.get_logger().info(f'Published operator command: {operator_command}')
         self._last_publish_sec = now_sec
+        self._profile('operator_command_published', operator_command=operator_command)
         return True
 
     def _publish_motion(self, now_sec: float) -> None:
@@ -256,7 +270,7 @@ class KeyboardTeleopNode(Node):
         if self._last_motion_command_sec is None:
             return
 
-        if not self._runtime_state.motion_commands_allowed():
+        if not self._runtime_state.motion_commands_allowed(self._motion_min_altitude_m):
             self._clear_active_motion(
                 now_sec,
                 reason='runtime left motion-capable state',
@@ -272,6 +286,7 @@ class KeyboardTeleopNode(Node):
                 self._io.publish_zero()
                 self._last_publish_sec = now_sec
                 self.get_logger().info('Motion hold timeout elapsed, published stop command')
+                self._profile('zero_command_published', reason='motion_hold_timeout')
             self._last_motion_command_sec = None
             return
 
@@ -299,6 +314,8 @@ class KeyboardTeleopNode(Node):
 
         if not log_only_when_cleared or had_motion:
             self.get_logger().info(f'Cleared active motion command due to {reason}')
+        if had_motion:
+            self._profile('zero_command_published', reason=reason)
 
     def _print_status(self, now_sec: float) -> None:
         if not self._initial_status_reported:
@@ -341,6 +358,19 @@ class KeyboardTeleopNode(Node):
 
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
+
+    def _profile(self, event_type: str, **payload) -> None:
+        if not self._profile_enabled:
+            return
+        payload.update(
+            {
+                'component': 'manual_runtime_test',
+                'event_type': event_type,
+                'wall_time_epoch_sec': time.time(),
+                'ros_time_sec': self._now_sec(),
+            }
+        )
+        self.get_logger().info(f"PROFILE:{json.dumps(payload, separators=(',', ':'))}")
 
 
 def main(args=None):

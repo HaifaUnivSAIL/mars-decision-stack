@@ -4,7 +4,9 @@ from typing import Optional
 
 
 MC_STATE_STANDBY = 2
+MC_STATE_PERFORMING_MISSION = 4
 HLC_STATE_READY = 4
+HLC_STATE_GAINING_ALTITUDE = 6
 HLC_STATE_AIRBORNE = 7
 HLC_STATE_MANUAL = 9
 
@@ -113,8 +115,19 @@ class RuntimeState:
     def is_takeoff_ready(self, now_sec: Optional[float] = None, telemetry_timeout_sec: Optional[float] = None) -> bool:
         return self.hlc_state == HLC_STATE_READY and self.mc_state == MC_STATE_STANDBY
 
-    def motion_commands_allowed(self) -> bool:
-        return self.hlc_state in {HLC_STATE_AIRBORNE, HLC_STATE_MANUAL}
+    def motion_commands_allowed(self, min_altitude_m: float = 0.5) -> bool:
+        if self.hlc_state in {HLC_STATE_AIRBORNE, HLC_STATE_MANUAL}:
+            return True
+
+        flight_capable = (
+            self.telemetry.armed and
+            self.telemetry.state.upper() == 'ACTIVE' and
+            self.telemetry.altitude >= min_altitude_m
+        )
+        if not flight_capable:
+            return False
+
+        return self.hlc_state == HLC_STATE_GAINING_ALTITUDE or self.mc_state == MC_STATE_PERFORMING_MISSION
 
     def mc_state_name(self) -> str:
         return MC_STATE_NAMES.get(self.mc_state, str(self.mc_state))

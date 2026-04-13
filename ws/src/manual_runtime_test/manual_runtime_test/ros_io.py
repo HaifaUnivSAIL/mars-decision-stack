@@ -9,18 +9,18 @@ class ManualRuntimeRosIo:
     def __init__(self, node, runtime_state):
         self._node = node
         self._runtime_state = runtime_state
-        self._velocity_pub = node.create_publisher(Twist, '/alate_input_velocity', 10)
-        self._opcom_pub = node.create_publisher(OpCom, '/alate_input_operator_command', 10)
+        self._velocity_pub = node.create_publisher(Twist, 'alate_input_velocity', 10)
+        self._opcom_pub = node.create_publisher(OpCom, 'alate_input_operator_command', 10)
         state_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
-        node.create_subscription(McState, '/alate_output_mission_control_state', self._on_mc_state, state_qos)
-        node.create_subscription(HlcState, '/alate_output_high_level_control_state', self._on_hlc_state, state_qos)
-        node.create_subscription(HlcTelemetry, '/alate_output_high_level_control_telemetry', self._on_telemetry, 10)
-        node.create_subscription(HlcPlatformError, '/alate_output_high_level_control_platform_errors', self._on_error, 10)
+        node.create_subscription(McState, 'alate_output_mission_control_state', self._on_mc_state, state_qos)
+        node.create_subscription(HlcState, 'alate_output_high_level_control_state', self._on_hlc_state, state_qos)
+        node.create_subscription(HlcTelemetry, 'alate_output_high_level_control_telemetry', self._on_telemetry, 10)
+        node.create_subscription(HlcPlatformError, 'alate_output_high_level_control_platform_errors', self._on_error, 10)
 
     def publish_velocity(self, linear_x: float, linear_y: float, linear_z: float) -> None:
         msg = Twist()

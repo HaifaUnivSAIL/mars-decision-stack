@@ -293,16 +293,24 @@ def generate_runtime_world(template_path: Path, runtime_model_name: str, mode: s
 
 
 def emit_manifest(output_dir: Path, mode: str, run_id: str, runtime_model_name: str, world_filename: str, pose: dict[str, float]) -> None:
+    active_topics = {
+        "deployed": "/mars/visual/deployed_camera",
+        "chase": "/mars/visual/chase_camera",
+    }
     manifest = {
         "run_id": run_id,
         "mode": mode,
+        "fleet": False,
         "runtime_model_name": runtime_model_name,
         "runtime_model_uri": f"model://{runtime_model_name}",
         "runtime_world_name": "mars_iris_dual_view",
         "runtime_world_relative_path": f"worlds/{world_filename}",
         "runtime_model_relative_path": f"models/{runtime_model_name}/model.sdf",
-        "camera_topic": "/mars/visual/deployed_camera",
-        "chase_topic": "/mars/visual/chase_camera",
+        "camera_topic": active_topics["deployed"],
+        "chase_topic": active_topics["chase"],
+        "active_topics": active_topics,
+        "focus_topics": {},
+        "active_drone_id": "drone_1",
         "base_link_name": "iris_with_standoffs::base_link",
         "mount_link_name": "deployed_camera_rigid_mount_link",
         "optical_link_name": "deployed_camera_optical_link",
@@ -321,6 +329,20 @@ def emit_manifest(output_dir: Path, mode: str, run_id: str, runtime_model_name: 
             },
         },
         "calibration_joint_names": list(CALIBRATION_CONTROL_JOINTS) if mode == "calib" else [],
+        "drones": [
+            {
+                "id": "drone_1",
+                "index": 0,
+                "namespace": "",
+                "runtime_model_name": runtime_model_name,
+                "camera_topics": active_topics,
+                "camera_deployment": pose,
+                "base_link_name": "iris_with_standoffs::base_link",
+                "mount_link_name": "deployed_camera_rigid_mount_link",
+                "optical_link_name": "deployed_camera_optical_link",
+                "deployment_target_link_name": "deployed_camera_rigid_mount_link",
+            }
+        ],
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

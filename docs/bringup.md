@@ -66,9 +66,23 @@ Each visual run now creates a run directory under `logs/runs/` containing:
 - `ros2 topic list -t` snapshots
 - HLC/MC readiness evidence copied from the live logs
 
-If a visual stack is already running, `run_visual_stack.sh` now reports that,
+If a visual stack is already running, `run_visual_stack.sh` reports that,
 stops the old stack, and starts a fresh one so updated camera deployment values
 and runtime assets are always picked up.
+
+In Phase 1, the default visual experiment workflow is fleet-based and reads
+`config/swarm/visual.swarm.json`. That manifest controls:
+
+- drone ids such as `drone_1` and `drone_2`
+- spawn poses
+- per-drone camera topics
+- deterministic ports and runtime namespaces
+
+To target a different fleet manifest:
+
+```bash
+./scripts/run_visual_stack.sh --fleet config/swarm/visual.swarm.json
+```
 
 To start the calibration layout with the 6-DOF camera tuning controls:
 
@@ -106,4 +120,17 @@ To run the keyboard-controlled visual runtime test in calibration mode:
 
 ```bash
 ./scripts/run_visual_teleop.sh --calib
+```
+
+To control one fleet member explicitly:
+
+```bash
+./scripts/run_visual_teleop.sh --drone drone_1
+./scripts/run_visual_teleop.sh --drone drone_2
+```
+
+To switch the active camera views in the running GUI without restarting:
+
+```bash
+./scripts/set_visual_focus.sh --drone drone_2
 ```

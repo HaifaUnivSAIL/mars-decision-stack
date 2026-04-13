@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
+import time
 from typing import Optional
 
 import rclpy
@@ -69,6 +72,7 @@ class ScenarioNode(Node):
         self._landing_touchdown_sec: Optional[float] = None
         self._finished = False
         self._failed = False
+        self._profile_enabled = os.getenv('STACK_PROFILE', '0') == '1'
 
         control_frequency_hz = max(float(self.get_parameter('control_frequency_hz').value), 0.1)
         self.create_timer(1.0 / control_frequency_hz, self._tick)
@@ -124,6 +128,7 @@ class ScenarioNode(Node):
             self._io.publish_operator_command(OpCom.OP_COMMAND_TAKEOFF)
             self._takeoff_sent = True
             self.get_logger().info('Published takeoff command')
+            self._profile('operator_command_published', operator_command='takeoff')
         self._set_phase('waiting_airborne', now_sec)
 
     def _handle_waiting_airborne(self, now_sec: float) -> None:
@@ -153,8 +158,16 @@ class ScenarioNode(Node):
                 linear_y=action.linear_y,
                 linear_z=action.linear_z,
             )
+            self._profile(
+                'velocity_command_published',
+                label=action.label,
+                linear_x=action.linear_x,
+                linear_y=action.linear_y,
+                linear_z=action.linear_z,
+            )
         elif action.kind == 'stop':
             self._io.publish_zero()
+            self._profile('zero_command_published', reason='scenario_stop_action')
 
         if elapsed_sec >= action.duration_sec:
             self._action_index += 1
@@ -162,6 +175,7 @@ class ScenarioNode(Node):
 
     def _handle_stopping_after_actions(self, now_sec: float) -> None:
         self._io.publish_zero()
+        self._profile('zero_command_published', reason='scenario_stop_after_actions')
         if (now_sec - self._phase.started_sec) < self._stop_after_actions_sec:
             return
         if self._land_after_actions:
@@ -170,6 +184,7 @@ class ScenarioNode(Node):
                 self._io.publish_operator_command(OpCom.OP_COMMAND_LAND)
                 self._landing_sent = True
                 self.get_logger().info('Published landing command')
+                self._profile('operator_command_published', operator_command='land')
             self._set_phase('landing', now_sec)
         else:
             self._finish(now_sec)
@@ -210,6 +225,7 @@ class ScenarioNode(Node):
     def _set_phase(self, name: str, now_sec: float) -> None:
         self._phase = ScenarioPhase(name=name, started_sec=now_sec)
         self.get_logger().info(f'Scenario phase -> {name}')
+        self._profile('scenario_phase_entered', phase=name)
 
     def _finish(self, now_sec: float) -> None:
         self._io.publish_zero()
@@ -221,6 +237,20 @@ class ScenarioNode(Node):
         self.get_logger().error(reason)
         self._failed = True
         self._finish(now_sec)
+
+    def _profile(self, event_type: str, **payload) -> None:
+        if not self._profile_enabled:
+            return
+        payload.update(
+            {
+                'component': 'policy_scenario',
+                'event_type': event_type,
+                'wall_time_epoch_sec': time.time(),
+                'ros_time_sec': self.get_clock().now().nanoseconds / 1e9,
+                'scenario_name': self._scenario_name,
+            }
+        )
+        self.get_logger().info(f"PROFILE:{json.dumps(payload, separators=(',', ':'))}")
 
 
 def main(args=None):

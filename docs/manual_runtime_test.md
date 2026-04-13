@@ -21,6 +21,7 @@ The recommended workflow uses the Gazebo-backed visual stack:
 
 - a chase-camera rendered view that keeps the vehicle in frame
 - a front-bottom deployed camera rendered from the vehicle itself
+- a fleet experiment workflow where each drone keeps its own ROS namespace and control slice
 - a JSON-configured deployed-camera mount loaded from `config/visual/camera.deployment.json`
 - the same ROS and NeMALA runtime used by decision modules
 - keyboard control through the `manual_runtime_test` package
@@ -71,6 +72,13 @@ additional spawn implementation is required for the current simulation path.
 ./scripts/run_visual_teleop.sh
 ```
 
+Target one drone explicitly:
+
+```bash
+./scripts/run_visual_teleop.sh --drone drone_1
+./scripts/run_visual_teleop.sh --drone drone_2
+```
+
 Calibration mode:
 
 ```bash
@@ -90,6 +98,14 @@ The script:
 5. keeps the chase and deployed-camera views available in Gazebo while commands are issued
 6. uses the deployment stored in `config/visual/camera.deployment.json`
 7. writes the full run record under `logs/runs/<timestamp>-<mode>/`
+
+In fleet experiment mode, keyboard commands are sent into the selected drone
+namespace:
+
+- `/<drone_id>/alate_input_velocity`
+- `/<drone_id>/alate_input_operator_command`
+
+The default fleet manifest is `config/swarm/visual.swarm.json`.
 
 The run record includes:
 
@@ -142,8 +158,10 @@ Calibration-mode validation:
 This validator checks:
 
 - visual stack bring-up
-- HLC and MC readiness
-- availability of `/mars/visual/chase_camera` and `/mars/visual/deployed_camera`
+- HLC and MC readiness for every drone in the fleet manifest
+- availability of `/mars/visual/active/chase_camera` and `/mars/visual/active/deployed_camera`
+- per-drone takeoff / land smoke in the selected fleet manifest
+- live focus switching between drones
 - live deployed-camera pose verification against `config/visual/camera.deployment.json`
 - scripted teleoperation command publication against the visual runtime
 - presence of the run manifest, generated visual assets, and per-service runtime logs

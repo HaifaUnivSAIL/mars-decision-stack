@@ -4,15 +4,15 @@ Mars Decision Stack is a ROS 2 and NeMALA integration repository for research
 and lab development of decision-making algorithms on top of the Alate runtime.
 It provides a reproducible workspace that combines the vehicle runtime, ROS
 bridge packages, a local decision-agent package, and a Docker-based startup
-stack for simulation-first experimentation and controlled transition to
-platform-specific deployment.
+stack for simulation-first experimentation, fleet-scale SITL bring-up, and a
+controlled transition to platform-specific deployment.
 
 ## What This Repository Provides
 
 - pinned source dependencies for `alate`, `nemala_core`, and ROS bridge packages
 - a reproducible Docker build for the integrated runtime and ROS workspace
-- a startup stack for single-UAV SITL bring-up with Alate mission control and
-  high-level control
+- a startup stack for single-UAV and fleet SITL bring-up with Alate mission
+  control and high-level control
 - a Gazebo-based visual simulation path with chase and deployed-camera views
   for operator-in-the-loop runtime testing
 - ROS 2 bridge topics for command ingress and runtime state, telemetry, and
@@ -59,7 +59,7 @@ code:
 The current repository version is optimized for simulation-first research and
 integration validation:
 
-- single-UAV bring-up
+- single-UAV and fleet bring-up
 - ArduCopter SITL
 - Gazebo visual simulation with keyboard-driven operator testing
 - Alate mission control and high-level control
@@ -137,6 +137,9 @@ The same 6-DOF deployment is used in both visual modes:
 ./scripts/run_visual_stack.sh
 ```
 
+This now starts the default two-drone experiment fleet defined in
+`config/swarm/visual.swarm.json`.
+
 Each visual run writes a full debug bundle under `logs/runs/<timestamp>-<mode>/`
 containing the generated world/model, the requested camera config, the applied
 manifest, per-service logs, deployment verification reports, ROS graph
@@ -170,6 +173,13 @@ applied deterministically.
 ./scripts/run_visual_teleop.sh
 ```
 
+To target one drone explicitly:
+
+```bash
+./scripts/run_visual_teleop.sh --drone drone_1
+./scripts/run_visual_teleop.sh --drone drone_2
+```
+
 This command also refreshes the visual stack first, so the current
 `config/visual/camera.deployment.json` values are guaranteed to be active before
 teleoperation starts.
@@ -183,6 +193,27 @@ teleoperation starts.
 This workflow uses the same ROS command interface as local decision modules, so
 manual testing and algorithm development stay aligned at the interface boundary.
 
+### Fleet manifest and visual focus
+
+Fleet experiment mode is driven by `config/swarm/visual.swarm.json`. Each drone
+entry defines:
+
+- a stable drone id such as `drone_1`
+- spawn pose
+- per-drone camera topics
+- deterministic runtime ports and namespaces derived from the manifest
+
+The visual GUI binds to stable active-camera topics:
+
+- `/mars/visual/active/chase_camera`
+- `/mars/visual/active/deployed_camera`
+
+Switch the active camera focus at runtime with:
+
+```bash
+./scripts/set_visual_focus.sh --drone drone_2
+```
+
 ## ROS Interface Contract
 
 The current bridge exposes the operational interface used by local research code
@@ -190,15 +221,15 @@ and runtime integration:
 
 ### Inputs to Alate
 
-- `/alate_input_velocity` (`geometry_msgs/msg/Twist`)
-- `/alate_input_operator_command` (`ros_alate_interfaces/msg/OpCom`)
+- `/<drone_id>/alate_input_velocity` (`geometry_msgs/msg/Twist`)
+- `/<drone_id>/alate_input_operator_command` (`ros_alate_interfaces/msg/OpCom`)
 
 ### Outputs from Alate
 
-- `/alate_output_mission_control_state` (`ros_alate_interfaces/msg/McState`)
-- `/alate_output_high_level_control_state` (`ros_alate_interfaces/msg/HlcState`)
-- `/alate_output_high_level_control_telemetry` (`ros_alate_interfaces/msg/HlcTelemetry`)
-- `/alate_output_high_level_control_platform_errors` (`ros_alate_interfaces/msg/HlcPlatformError`)
+- `/<drone_id>/alate_output_mission_control_state` (`ros_alate_interfaces/msg/McState`)
+- `/<drone_id>/alate_output_high_level_control_state` (`ros_alate_interfaces/msg/HlcState`)
+- `/<drone_id>/alate_output_high_level_control_telemetry` (`ros_alate_interfaces/msg/HlcTelemetry`)
+- `/<drone_id>/alate_output_high_level_control_platform_errors` (`ros_alate_interfaces/msg/HlcPlatformError`)
 
 `decision_agent` is expected to consume the output topics as its experimental
 observation interface and publish commands through the input topics.

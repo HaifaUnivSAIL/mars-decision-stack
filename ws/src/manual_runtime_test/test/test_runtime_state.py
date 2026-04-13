@@ -1,7 +1,9 @@
 from manual_runtime_test.runtime_state import (
+    HLC_STATE_GAINING_ALTITUDE,
     HLC_STATE_AIRBORNE,
     HLC_STATE_MANUAL,
     HLC_STATE_READY,
+    MC_STATE_PERFORMING_MISSION,
     MC_STATE_STANDBY,
     RuntimeState,
     TelemetryState,
@@ -31,7 +33,7 @@ def test_telemetry_freshness_uses_timestamp():
     assert runtime_state.telemetry_is_fresh(now_sec=13.5, timeout_sec=2.0) is False
 
 
-def test_motion_commands_allowed_only_in_airborne_or_manual():
+def test_motion_commands_allowed_in_airborne_or_manual():
     runtime_state = RuntimeState()
 
     assert runtime_state.motion_commands_allowed() is False
@@ -44,6 +46,40 @@ def test_motion_commands_allowed_only_in_airborne_or_manual():
 
     runtime_state.update_hlc_state(HLC_STATE_READY)
     assert runtime_state.motion_commands_allowed() is False
+
+
+def test_motion_commands_allowed_in_flight_capable_gaining_altitude():
+    runtime_state = RuntimeState()
+    runtime_state.update_hlc_state(HLC_STATE_GAINING_ALTITUDE)
+    runtime_state.update_telemetry(
+        TelemetryState(altitude=0.75, armed=True, state='ACTIVE'),
+        stamp_sec=5.0,
+    )
+
+    assert runtime_state.motion_commands_allowed(min_altitude_m=0.5) is True
+
+
+def test_motion_commands_blocked_when_gaining_altitude_but_not_yet_flying():
+    runtime_state = RuntimeState()
+    runtime_state.update_hlc_state(HLC_STATE_GAINING_ALTITUDE)
+    runtime_state.update_telemetry(
+        TelemetryState(altitude=0.10, armed=True, state='ACTIVE'),
+        stamp_sec=5.0,
+    )
+
+    assert runtime_state.motion_commands_allowed(min_altitude_m=0.5) is False
+
+
+def test_motion_commands_allowed_in_performing_mission_with_active_flight():
+    runtime_state = RuntimeState()
+    runtime_state.update_mc_state(MC_STATE_PERFORMING_MISSION)
+    runtime_state.update_hlc_state(HLC_STATE_READY)
+    runtime_state.update_telemetry(
+        TelemetryState(altitude=0.80, armed=True, state='ACTIVE'),
+        stamp_sec=5.0,
+    )
+
+    assert runtime_state.motion_commands_allowed(min_altitude_m=0.5) is True
 
 
 def test_clear_command_reference_resets_motion_debug_state():

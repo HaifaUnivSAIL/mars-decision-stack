@@ -1,0 +1,48 @@
+{
+  "active_drone_id": "drone_1",
+  "defaults": {
+    "camera_deployment_config": "config/visual/camera.deployment.json",
+    "alate_profile": "config/alate/uav.visual.fleet.sitl.json",
+    "ros_alate_profile": "config/ros_alate/adapter.yaml",
+    "ros_nemala_profile": "config/ros_nemala/node_manager.yaml",
+    "camera_streams": {
+      "deployed": {
+        "width": 640,
+        "height": 480,
+        "update_rate_hz": 10.0
+      },
+      "chase": {
+        "width": 960,
+        "height": 540,
+        "update_rate_hz": 15.0
+      }
+    },
+    "rendering": {
+      "sun_cast_shadows": false
+    },
+    "physics": {
+      "max_step_size": 0.02,
+      "real_time_factor": 1.0
+    }
+  },
+  "drones": [
+    {
+      "id": "drone_1",
+      "spawn": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.195,
+        "yaw_deg": 90.0
+      }
+    },
+    {
+      "id": "drone_2",
+      "spawn": {
+        "x": 0.0,
+        "y": 4.0,
+        "z": 0.195,
+        "yaw_deg": 90.0
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-/ros_alate_adapter:
+ros_alate_adapter:
   ros__parameters:
     alate_operator_command_topic: 101
     alate_mission_control_state_topic: 102
