@@ -113,7 +113,7 @@ RUNTIME_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 
 
 def default_runtime_profile(drone_count: int) -> str:
-    return "single_equivalent" if int(drone_count) <= 1 else "fleet_control_stable"
+    return "single_equivalent"
 
 
 def deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

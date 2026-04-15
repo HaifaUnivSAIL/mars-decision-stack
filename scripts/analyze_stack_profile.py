@@ -22,6 +22,9 @@ SERVO_DELTA_THRESHOLD = 5.0
 TAKEOFF_ALTITUDE_EPSILON_M = 0.05
 YAW_SPIN_THRESHOLD_DEG = 45.0
 YAW_RATE_SPIN_THRESHOLD_RAD_S = 0.8
+IDLE_HORIZONTAL_DRIFT_THRESHOLD_M = 0.05
+IDLE_VERTICAL_DRIFT_THRESHOLD_M = 0.02
+IDLE_YAW_DRIFT_THRESHOLD_DEG = 2.0
 CONTROL_COMPONENTS = {
     'manual_runtime_test',
     'command_publisher',
@@ -395,6 +398,15 @@ class ProfileAnalyzer:
         commands.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
         return commands
 
+    def _all_operator_commands(self) -> list[dict[str, Any]]:
+        commands = [
+            row
+            for row in self.ros_events
+            if row.get('event_type') == 'input_operator_command' and row['payload'].get('op_com_name') in {'takeoff', 'land', 'gohome'}
+        ]
+        commands.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
+        return commands
+
     def _velocity_commands(self, drone_id: str) -> list[dict[str, Any]]:
         rows = self._rows_for_drone(self.ros_events, drone_id)
         commands = [
@@ -625,6 +637,7 @@ class ProfileAnalyzer:
         state_latency = self._state_transition_latency(drone_id, reference_time) if reference_time is not None else {'wall_sec': None, 'sim_sec': None, 'event_type': None}
         actuator_latency = self._first_servo_change_latency(drone_id, latest_velocity) if latest_velocity is not None else {'wall_sec': None, 'sim_sec': None}
         motion_latency = self._first_motion_latency(drone_id, latest_velocity) if latest_velocity is not None else {'wall_sec': None, 'sim_sec': None}
+        idle_drift = self._idle_drift_summary(drone_id, startup['hlc_ready_wall_time_sec'])
         return {
             **startup,
             'operator_command_count': len(operator_commands),
@@ -635,15 +648,10 @@ class ProfileAnalyzer:
             'takeoff_duration_to_altitude_threshold': self._takeoff_duration(drone_id),
             'landing_duration_to_standby': self._landing_duration(drone_id),
             'pose': self._pose_summary(drone_id),
+            **idle_drift,
         }
 
-    def _window_end_time(self, drone_id: str, start_time: float, operator_commands: list[dict[str, Any]]) -> float:
-        next_command_time = None
-        for command in operator_commands:
-            wall = command.get('wall_time_epoch_sec')
-            if wall is not None and wall > start_time:
-                next_command_time = wall
-                break
+    def _drone_tail_time(self, drone_id: str) -> float | None:
         tail_candidates: list[float] = []
         for rows in (
             self._rows_for_drone(self.ros_events, drone_id),
@@ -655,17 +663,141 @@ class ProfileAnalyzer:
             self._attitude_rows(drone_id),
             self._local_position_rows(drone_id),
         ):
-            if rows:
-                tail = rows[-1].get('wall_time_epoch_sec')
-                if tail is None:
-                    tail = rows[-1].get('host_time_sec')
-                if tail is not None:
-                    tail_candidates.append(tail)
+            if not rows:
+                continue
+            tail = rows[-1].get('wall_time_epoch_sec')
+            if tail is None:
+                tail = rows[-1].get('host_time_sec')
+            if tail is not None:
+                tail_candidates.append(tail)
+        return max(tail_candidates) if tail_candidates else None
+
+    def _window_end_time(self, drone_id: str, start_time: float, operator_commands: list[dict[str, Any]]) -> float:
+        next_command_time = None
+        for command in operator_commands:
+            wall = command.get('wall_time_epoch_sec')
+            if wall is not None and wall > start_time:
+                next_command_time = wall
+                break
         if next_command_time is not None:
             return next_command_time
-        if tail_candidates:
-            return max(tail_candidates)
+        tail_time = self._drone_tail_time(drone_id)
+        if tail_time is not None:
+            return tail_time
         return start_time + 60.0
+
+    def _idle_drift_thresholds(self) -> dict[str, float]:
+        return {
+            'horizontal_drift_m': IDLE_HORIZONTAL_DRIFT_THRESHOLD_M,
+            'vertical_drift_m': IDLE_VERTICAL_DRIFT_THRESHOLD_M,
+            'yaw_drift_deg': IDLE_YAW_DRIFT_THRESHOLD_DEG,
+        }
+
+    def _pose_drift_metrics(self, drone_id: str, start_time: float | None, end_time: float | None) -> dict[str, Any]:
+        empty = {
+            'horizontal_drift_m': None,
+            'vertical_drift_m': None,
+            'yaw_drift_deg': None,
+            'pose_sample_count': 0,
+        }
+        if start_time is None or end_time is None or end_time < start_time:
+            return empty
+
+        all_rows = self._position_rows(drone_id)
+        baseline = None
+        window_rows: list[dict[str, Any]] = []
+        for row in all_rows:
+            wall = row.get('wall_time_epoch_sec')
+            if wall is None:
+                continue
+            if wall <= start_time:
+                baseline = row
+            if start_time <= wall <= end_time:
+                window_rows.append(row)
+        if baseline is None and window_rows:
+            baseline = window_rows[0]
+        if baseline is None or not window_rows:
+            return empty
+
+        baseline_x = baseline.get('x') or 0.0
+        baseline_y = baseline.get('y') or 0.0
+        baseline_z = baseline.get('z') or 0.0
+        baseline_yaw = baseline.get('yaw')
+        max_horizontal = 0.0
+        max_vertical = 0.0
+        max_yaw_deg = 0.0 if baseline_yaw is not None else None
+        for row in window_rows:
+            x = row.get('x') or 0.0
+            y = row.get('y') or 0.0
+            z = row.get('z') or 0.0
+            yaw = row.get('yaw')
+            max_horizontal = max(max_horizontal, math.hypot(x - baseline_x, y - baseline_y))
+            max_vertical = max(max_vertical, abs(z - baseline_z))
+            if baseline_yaw is not None and yaw is not None:
+                max_yaw_deg = max(max_yaw_deg or 0.0, abs(math.degrees(wrap_angle_delta(yaw, baseline_yaw))))
+        return {
+            'horizontal_drift_m': max_horizontal,
+            'vertical_drift_m': max_vertical,
+            'yaw_drift_deg': max_yaw_deg,
+            'pose_sample_count': len(window_rows),
+        }
+
+    def _idle_servo_distinct_values(self, drone_id: str, start_time: float | None, end_time: float | None) -> dict[str, list[int]]:
+        if start_time is None or end_time is None or end_time < start_time:
+            return {}
+        values = {f'servo{i}_raw': set() for i in range(1, 5)}
+        for row in self._servo_rows(drone_id):
+            host = row.get('host_time_sec')
+            if host is None or host < start_time or host > end_time:
+                continue
+            for index in range(1, 5):
+                value = safe_int(row.get(f'servo{index}_raw'))
+                if value is not None:
+                    values[f'servo{index}_raw'].add(value)
+        return {key: sorted(items) for key, items in values.items() if items}
+
+    def _idle_drift_gate(self, drift_metrics: dict[str, Any]) -> bool | None:
+        horizontal = drift_metrics.get('horizontal_drift_m')
+        vertical = drift_metrics.get('vertical_drift_m')
+        yaw = drift_metrics.get('yaw_drift_deg')
+        if horizontal is None or vertical is None or yaw is None:
+            return None
+        return (
+            horizontal <= IDLE_HORIZONTAL_DRIFT_THRESHOLD_M
+            and vertical <= IDLE_VERTICAL_DRIFT_THRESHOLD_M
+            and yaw <= IDLE_YAW_DRIFT_THRESHOLD_DEG
+        )
+
+    def _idle_drift_summary(self, drone_id: str, ready_time: float | None) -> dict[str, Any]:
+        all_operator_commands = self._all_operator_commands()
+        first_operator_command = all_operator_commands[0]['wall_time_epoch_sec'] if all_operator_commands else self._drone_tail_time(drone_id)
+        precommand_metrics = self._pose_drift_metrics(drone_id, ready_time, first_operator_command)
+
+        foreign_command_time = None
+        if not self._operator_commands(drone_id):
+            for command in all_operator_commands:
+                wall = command.get('wall_time_epoch_sec')
+                if wall is None or command.get('drone_id') == drone_id:
+                    continue
+                foreign_command_time = wall
+                break
+        if ready_time is not None and foreign_command_time is not None:
+            foreign_command_time = max(foreign_command_time, ready_time)
+        uncommanded_metrics = self._pose_drift_metrics(drone_id, foreign_command_time, self._drone_tail_time(drone_id))
+
+        return {
+            'idle_drift_thresholds': self._idle_drift_thresholds(),
+            'precommand_horizontal_drift_m': precommand_metrics['horizontal_drift_m'],
+            'precommand_vertical_drift_m': precommand_metrics['vertical_drift_m'],
+            'precommand_yaw_drift_deg': precommand_metrics['yaw_drift_deg'],
+            'precommand_pose_sample_count': precommand_metrics['pose_sample_count'],
+            'precommand_idle_servo_distinct_values': self._idle_servo_distinct_values(drone_id, ready_time, first_operator_command),
+            'precommand_drift_gate_passed': self._idle_drift_gate(precommand_metrics),
+            'uncommanded_post_foreign_command_horizontal_drift_m': uncommanded_metrics['horizontal_drift_m'],
+            'uncommanded_post_foreign_command_vertical_drift_m': uncommanded_metrics['vertical_drift_m'],
+            'uncommanded_post_foreign_command_yaw_drift_deg': uncommanded_metrics['yaw_drift_deg'],
+            'uncommanded_post_foreign_command_drift_gate_passed': self._idle_drift_gate(uncommanded_metrics),
+        }
 
     def _last_value_before(self, rows: list[dict[str, Any]], time_key: str, value_key: str, cutoff: float) -> Any:
         last_value = None
@@ -1112,6 +1244,7 @@ class ProfileAnalyzer:
             'run_id': self.manifest.get('run_id'),
             'mode': self.manifest.get('mode'),
             'control_focus': 'takeoff',
+            'idle_drift_thresholds': self._idle_drift_thresholds(),
             'drones': {},
         }
         for drone in self.manifest.get('drones', []):
@@ -1125,6 +1258,7 @@ class ProfileAnalyzer:
             control_windows.extend(land_windows)
             control_windows.extend(rtl_windows)
             control_windows.extend(velocity_windows)
+            idle_drift = self._idle_drift_summary(drone_id, self._startup_metrics(drone_id)['hlc_ready_wall_time_sec'])
             summary['drones'][drone_id] = {
                 'takeoff_windows': takeoff_windows,
                 'land_windows': land_windows,
@@ -1134,6 +1268,7 @@ class ProfileAnalyzer:
                 'latest_land': land_windows[-1] if land_windows else None,
                 'latest_rtl': rtl_windows[-1] if rtl_windows else None,
                 'latest_velocity': velocity_windows[-1] if velocity_windows else None,
+                **idle_drift,
             }
         write_csv_rows(
             self.control_windows_path,
@@ -1192,11 +1327,35 @@ class ProfileAnalyzer:
                 findings.append({'priority': 4, 'title': f'High container CPU pressure ({container_name})', 'detail': f'peak cpu={cpu_peak:.1f}%'})
         for drone_id, drone_summary in control_summary.get('drones', {}).items():
             latest_takeoff = drone_summary.get('latest_takeoff')
+            if drone_summary.get('precommand_drift_gate_passed') is False:
+                findings.append(
+                    {
+                        'priority': 5,
+                        'title': f'Ground drift before command ({drone_id})',
+                        'detail': (
+                            f"h={drone_summary.get('precommand_horizontal_drift_m'):.3f}m "
+                            f"v={drone_summary.get('precommand_vertical_drift_m'):.3f}m "
+                            f"yaw={drone_summary.get('precommand_yaw_drift_deg'):.2f}deg"
+                        ),
+                    }
+                )
+            if drone_summary.get('uncommanded_post_foreign_command_drift_gate_passed') is False:
+                findings.append(
+                    {
+                        'priority': 6,
+                        'title': f'Uncommanded drone motion after foreign command ({drone_id})',
+                        'detail': (
+                            f"h={drone_summary.get('uncommanded_post_foreign_command_horizontal_drift_m'):.3f}m "
+                            f"v={drone_summary.get('uncommanded_post_foreign_command_vertical_drift_m'):.3f}m "
+                            f"yaw={drone_summary.get('uncommanded_post_foreign_command_yaw_drift_deg'):.2f}deg"
+                        ),
+                    }
+                )
             if not latest_takeoff:
                 continue
             outcome = latest_takeoff.get('outcome')
             if outcome != 'success_climb':
-                findings.append({'priority': 5, 'title': f'Takeoff control anomaly ({drone_id})', 'detail': f'outcome={outcome}'})
+                findings.append({'priority': 7, 'title': f'Takeoff control anomaly ({drone_id})', 'detail': f'outcome={outcome}'})
         findings.sort(key=lambda row: (row['priority'], row['title']))
         return findings
 
@@ -1215,6 +1374,7 @@ class ProfileAnalyzer:
             'containers': self._container_summary(),
             'gpu': self._gpu_summary(),
             'focus_event_count': len(self.focus_rows),
+            'idle_drift_thresholds': self._idle_drift_thresholds(),
             'control': {
                 'summary_file': str(self.control_summary_path.relative_to(self.run_dir)),
                 'latest_takeoff_outcomes': {
@@ -1250,6 +1410,12 @@ class ProfileAnalyzer:
         lines.append('## Per Drone')
         for drone_id, drone_summary in summary.get('drones', {}).items():
             lines.append(f"- `{drone_id}` startup(mc/hlc)={drone_summary.get('startup_time_to_mc_standby_sec')} / {drone_summary.get('startup_time_to_hlc_ready_sec')} s")
+            lines.append(
+                f"- `{drone_id}` precommand drift h/v/yaw={drone_summary.get('precommand_horizontal_drift_m')} / {drone_summary.get('precommand_vertical_drift_m')} / {drone_summary.get('precommand_yaw_drift_deg')} samples={drone_summary.get('precommand_pose_sample_count')} gate={drone_summary.get('precommand_drift_gate_passed')}"
+            )
+            lines.append(
+                f"- `{drone_id}` uncommanded-after-foreign drift h/v/yaw={drone_summary.get('uncommanded_post_foreign_command_horizontal_drift_m')} / {drone_summary.get('uncommanded_post_foreign_command_vertical_drift_m')} / {drone_summary.get('uncommanded_post_foreign_command_yaw_drift_deg')} gate={drone_summary.get('uncommanded_post_foreign_command_drift_gate_passed')}"
+            )
             lines.append(f"- `{drone_id}` command->state={drone_summary['command_to_state_transition_latency'].get('wall_sec')} s")
             lines.append(f"- `{drone_id}` command->actuator={drone_summary['command_to_first_actuator_change_latency'].get('wall_sec')} s")
             lines.append(f"- `{drone_id}` command->motion={drone_summary['command_to_first_motion_latency'].get('wall_sec')} s")
@@ -1279,6 +1445,15 @@ class ProfileAnalyzer:
         lines = ['# Control Trace Summary', '', f"Run: `{summary.get('run_id', '')}`", f"Mode: `{summary.get('mode', '')}`", '']
         for drone_id, drone_summary in summary.get('drones', {}).items():
             lines.append(f'## {drone_id}')
+            lines.append(
+                f"- Precommand drift h/v/yaw: `{drone_summary.get('precommand_horizontal_drift_m')}` / `{drone_summary.get('precommand_vertical_drift_m')}` / `{drone_summary.get('precommand_yaw_drift_deg')}`"
+            )
+            lines.append(f"- Precommand pose samples / gate: `{drone_summary.get('precommand_pose_sample_count')}` / `{drone_summary.get('precommand_drift_gate_passed')}`")
+            lines.append(
+                f"- Uncommanded-after-foreign drift h/v/yaw: `{drone_summary.get('uncommanded_post_foreign_command_horizontal_drift_m')}` / `{drone_summary.get('uncommanded_post_foreign_command_vertical_drift_m')}` / `{drone_summary.get('uncommanded_post_foreign_command_yaw_drift_deg')}`"
+            )
+            if drone_summary.get('precommand_idle_servo_distinct_values'):
+                lines.append(f"- Idle servo distinct values: `{json.dumps(drone_summary.get('precommand_idle_servo_distinct_values'), sort_keys=True)}`")
             latest_takeoff = drone_summary.get('latest_takeoff')
             if latest_takeoff:
                 lines.append(f"- Takeoff outcome: `{latest_takeoff.get('outcome')}`")

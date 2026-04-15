@@ -166,6 +166,8 @@ def success_drone_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
         {'wall_time_epoch_sec': '6.5', 'monotonic_sec': '6.5', 'ros_time_sec': '6.5', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Standby'})},
     ]
     pose_rows = [
+        {'wall_time_epoch_sec': '1.2', 'monotonic_sec': '1.2', 'sim_time_sec': '0.2', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.05'},
+        {'wall_time_epoch_sec': '1.8', 'monotonic_sec': '1.8', 'sim_time_sec': '0.8', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.08'},
         {'wall_time_epoch_sec': '2.0', 'monotonic_sec': '2.0', 'sim_time_sec': '1.0', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.1'},
         {'wall_time_epoch_sec': '2.8', 'monotonic_sec': '2.8', 'sim_time_sec': '1.8', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.25', 'roll': '0', 'pitch': '0', 'yaw': '0.03', 'pose_backlog_sec': '0.1'},
         {'wall_time_epoch_sec': '3.5', 'monotonic_sec': '3.5', 'sim_time_sec': '2.5', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '1.2', 'roll': '0', 'pitch': '0', 'yaw': '0.05', 'pose_backlog_sec': '0.15'},
@@ -322,6 +324,44 @@ def forced_land_after_partial_climb_fixture(drone_id: str) -> dict[str, list[dic
     }
 
 
+def uncommanded_drift_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
+    ros_events = [
+        {'wall_time_epoch_sec': '1.0', 'monotonic_sec': '1.0', 'ros_time_sec': '1.0', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Standby'})},
+        {'wall_time_epoch_sec': '1.1', 'monotonic_sec': '1.1', 'ros_time_sec': '1.1', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_state', 'event_type': 'high_level_control_state', 'payload_json': json.dumps({'hlc_state_name': 'Ready'})},
+    ]
+    pose_rows = [
+        {'wall_time_epoch_sec': '1.2', 'monotonic_sec': '1.2', 'sim_time_sec': '0.2', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.04'},
+        {'wall_time_epoch_sec': '1.8', 'monotonic_sec': '1.8', 'sim_time_sec': '0.8', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.06'},
+        {'wall_time_epoch_sec': '2.4', 'monotonic_sec': '2.4', 'sim_time_sec': '1.4', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.08', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.07'},
+        {'wall_time_epoch_sec': '2.8', 'monotonic_sec': '2.8', 'sim_time_sec': '1.8', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.08', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.08'},
+    ]
+    heartbeats = []
+    servo = [
+        {'host_time_sec': '1.5', 'time_usec': '1', 'servo1_raw': '1000', 'servo2_raw': '1000', 'servo3_raw': '1000', 'servo4_raw': '1000'},
+        {'host_time_sec': '2.5', 'time_usec': '2', 'servo1_raw': '1000', 'servo2_raw': '1000', 'servo3_raw': '1000', 'servo4_raw': '1000'},
+    ]
+    attitude = [
+        {'host_time_sec': '1.5', 'time_boot_ms': '100', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'rollspeed': '0', 'pitchspeed': '0', 'yawspeed': '0.0'},
+        {'host_time_sec': '2.5', 'time_boot_ms': '200', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'rollspeed': '0', 'pitchspeed': '0', 'yawspeed': '0.0'},
+    ]
+    local_position = [
+        {'host_time_sec': '1.5', 'time_boot_ms': '100', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'vx': '0.0', 'vy': '0.0', 'vz': '0.0'},
+        {'host_time_sec': '2.5', 'time_boot_ms': '200', 'x': '0.08', 'y': '0.0', 'z': '0.0', 'vx': '0.0', 'vy': '0.0', 'vz': '0.0'},
+    ]
+    statustext = []
+    component_logs = {}
+    return {
+        'ros_events': ros_events,
+        'pose_rows': pose_rows,
+        'heartbeat_rows': heartbeats,
+        'servo_rows': servo,
+        'attitude_rows': attitude,
+        'local_position_rows': local_position,
+        'statustext_rows': statustext,
+        'component_logs': component_logs,
+    }
+
+
 def prearm_drone_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
     ros_events = [
         {'wall_time_epoch_sec': '1.0', 'monotonic_sec': '1.0', 'ros_time_sec': '1.0', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Standby'})},
@@ -465,7 +505,14 @@ def test_analyze_stack_profile_single_success(tmp_path: Path) -> None:
 
     assert summary['run_id'] == 'single-success-run'
     assert summary['drones']['drone_1']['command_to_first_actuator_change_latency']['wall_sec'] is not None
+    assert summary['drones']['drone_1']['precommand_horizontal_drift_m'] == 0.0
+    assert summary['drones']['drone_1']['precommand_vertical_drift_m'] == 0.0
+    assert summary['drones']['drone_1']['precommand_yaw_drift_deg'] == 0.0
+    assert summary['drones']['drone_1']['precommand_pose_sample_count'] >= 2
+    assert summary['drones']['drone_1']['precommand_drift_gate_passed'] is True
+    assert summary['drones']['drone_1']['precommand_idle_servo_distinct_values']['servo1_raw'] == [1000]
     assert control_summary['drones']['drone_1']['latest_takeoff']['outcome'] == 'success_climb'
+    assert control_summary['drones']['drone_1']['precommand_drift_gate_passed'] is True
     assert 'takeoff_attempt' in control_windows
     assert 'statustext' in control_events or 'heartbeat' in control_events
     assert (profile_dir / 'control_summary.md').exists()
@@ -492,6 +539,37 @@ def test_analyze_stack_profile_swarm_failures(tmp_path: Path) -> None:
     assert control_summary['drones']['drone_1']['latest_takeoff']['outcome'] == 'yaw_spin_no_climb'
     assert control_summary['drones']['drone_2']['latest_takeoff']['outcome'] == 'prearm_blocked'
     assert 'Gyros inconsistent' in control_summary['drones']['drone_2']['latest_takeoff']['last_warning_text']
+
+
+def test_analyze_stack_profile_flags_uncommanded_drift_after_foreign_command(tmp_path: Path) -> None:
+    run_dir = make_run(
+        tmp_path,
+        'fleet-uncommanded-drift-run',
+        'fleet',
+        {
+            'drone_1': success_drone_fixture('drone_1'),
+            'drone_2': uncommanded_drift_fixture('drone_2'),
+        },
+        rtf=0.95,
+        backlog=0.25,
+        cpu_peak=100.0,
+    )
+    subprocess.run([sys.executable, str(ANALYZE), '--run-dir', str(run_dir)], check=True)
+
+    profile_dir = run_dir / 'diagnostics' / 'profile'
+    summary = json.loads((profile_dir / 'summary.json').read_text())
+    control_summary = json.loads((profile_dir / 'control_summary.json').read_text())
+
+    assert summary['drones']['drone_2']['precommand_drift_gate_passed'] is True
+    assert summary['drones']['drone_2']['uncommanded_post_foreign_command_horizontal_drift_m'] == 0.08
+    assert summary['drones']['drone_2']['uncommanded_post_foreign_command_vertical_drift_m'] == 0.0
+    assert summary['drones']['drone_2']['uncommanded_post_foreign_command_yaw_drift_deg'] == 0.0
+    assert summary['drones']['drone_2']['uncommanded_post_foreign_command_drift_gate_passed'] is False
+    assert control_summary['drones']['drone_2']['uncommanded_post_foreign_command_drift_gate_passed'] is False
+    assert any(
+        item['title'] == 'Uncommanded drone motion after foreign command (drone_2)'
+        for item in summary['bottlenecks']
+    )
 
 
 def test_analyze_stack_profile_forced_landing_beats_partial_climb(tmp_path: Path) -> None:

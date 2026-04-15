@@ -12,8 +12,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 FLEET_MANIFEST_MODULE = ROOT / 'scripts' / 'fleet_manifest.py'
 GENERATOR = ROOT / 'scripts' / 'generate_visual_fleet_assets.py'
+SINGLE_GENERATOR = ROOT / 'scripts' / 'generate_visual_assets.py'
 SOURCE_MODEL = ROOT / 'external' / 'ardupilot_gazebo' / 'models' / 'iris_with_camera_calibration' / 'model.sdf'
 WORLD_TEMPLATE = ROOT / 'sim' / 'worlds' / 'mars_iris_fleet_experiment.sdf'
+SINGLE_WORLD_TEMPLATE = ROOT / 'sim' / 'worlds' / 'mars_iris_dual_view.sdf'
+CALIBRATION_WORLD_TEMPLATE = ROOT / 'sim' / 'worlds' / 'mars_iris_dual_view_calibration.sdf'
 
 
 def load_module(module_path: Path, module_name: str):
@@ -67,6 +70,31 @@ def write_fleet_manifest(tmp_path: Path) -> Path:
     return manifest_path
 
 
+def write_fleet_control_stable_manifest(tmp_path: Path) -> Path:
+    manifest_path = tmp_path / 'visual.fleet_control_stable.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'active_drone_id': 'drone_1',
+                'defaults': {
+                    'camera_deployment_config': 'config/visual/camera.deployment.json',
+                    'alate_profile': 'config/alate/uav.visual.sitl.json',
+                    'ros_alate_profile': 'config/ros_alate/adapter.yaml',
+                    'ros_nemala_profile': 'config/ros_nemala/node_manager.yaml',
+                    'runtime_profile': 'fleet_control_stable',
+                },
+                'drones': [
+                    {'id': 'drone_1', 'spawn': {'x': 0.0, 'y': 0.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                    {'id': 'drone_2', 'spawn': {'x': 2.0, 'y': 4.0, 'z': 0.195, 'yaw_deg': 180.0}},
+                ],
+            },
+            indent=2,
+        )
+        + '\n'
+    )
+    return manifest_path
+
+
 def write_single_equivalent_manifest(tmp_path: Path) -> Path:
     manifest_path = tmp_path / 'visual.single_equivalent.json'
     manifest_path.write_text(
@@ -98,6 +126,7 @@ def test_fleet_manifest_derives_unique_namespaces_ports_and_topics(tmp_path: Pat
     fleet = module.load_fleet_definition(manifest_path, ROOT)
 
     assert fleet['active_drone_id'] == 'drone_1'
+    assert fleet['runtime_profile'] == 'single_equivalent'
     assert fleet['physics']['max_step_size'] == 0.005
     assert fleet['camera_streams']['deployed']['width'] == 640
     assert fleet['camera_streams']['chase']['update_rate_hz'] == 15.0
@@ -131,8 +160,8 @@ def test_single_equivalent_profile_matches_single_runtime_defaults(tmp_path: Pat
     assert fleet['sensor_behavior']['deployed']['remove_plugins'] == []
 
 
-def test_fleet_generator_emits_unique_world_models_and_configs(tmp_path: Path) -> None:
-    manifest_path = write_fleet_manifest(tmp_path)
+def test_fleet_generator_applies_explicit_fleet_control_stable_profile(tmp_path: Path) -> None:
+    manifest_path = write_fleet_control_stable_manifest(tmp_path)
     output_dir = tmp_path / 'out'
     subprocess.run(
         [
@@ -261,3 +290,138 @@ def test_single_equivalent_generator_keeps_single_like_sensor_behavior(tmp_path:
     assert chase_camera_sensor.find('./camera/image/height').text == '720'
     assert chase_camera_sensor.find('update_rate').text == '30.000'
     assert chase_camera_sensor.find('always_on').text == '1'
+
+
+def _normalize_autopilot_master(master: str) -> tuple[str, int | None]:
+    scheme, remainder = master.split(':', 1)
+    _host, port = remainder.rsplit(':', 1)
+    return scheme, int(port)
+
+
+def _sensor_signature(model_root: ET.Element, sensor_name: str) -> dict[str, object]:
+    sensor = model_root.find(f'.//sensor[@name="{sensor_name}"]')
+    assert sensor is not None
+    visualize = sensor.findtext('visualize')
+    always_on = sensor.findtext('always_on')
+    update_rate = sensor.findtext('update_rate')
+    return {
+        'visualize': str(visualize).lower() in {'1', 'true'},
+        'always_on': str(always_on).lower() in {'1', 'true'},
+        'width': int(sensor.findtext('./camera/image/width')),
+        'height': int(sensor.findtext('./camera/image/height')),
+        'update_rate': float(update_rate),
+        'plugins': sorted(plugin.attrib['name'] for plugin in sensor.findall('./plugin')),
+    }
+
+
+def _ardupilot_plugin_signature(model_root: ET.Element) -> dict[str, object]:
+    plugin = model_root.find('.//plugin[@name="ArduPilotPlugin"]')
+    assert plugin is not None
+    controls = []
+    for control in plugin.findall('control'):
+        controls.append(
+            {
+                'channel': control.attrib.get('channel'),
+                'jointName': control.findtext('jointName'),
+                'type': control.findtext('type'),
+                'multiplier': control.findtext('multiplier'),
+                'offset': control.findtext('offset'),
+                'servo_min': control.findtext('servo_min'),
+                'servo_max': control.findtext('servo_max'),
+                'cmd_min': control.findtext('cmd_min'),
+                'cmd_max': control.findtext('cmd_max'),
+            }
+        )
+    return {
+        'connectionTimeoutMaxCount': plugin.findtext('connectionTimeoutMaxCount'),
+        'lock_step': plugin.findtext('lock_step'),
+        'offline_recv_timeout_ms': plugin.findtext('offline_recv_timeout_ms'),
+        'online_recv_timeout_ms': plugin.findtext('online_recv_timeout_ms'),
+        'controls': controls,
+    }
+
+
+def test_single_drone_fleet_matches_single_artifacts(tmp_path: Path) -> None:
+    single_config = tmp_path / 'camera.json'
+    single_config.write_text(
+        json.dumps(
+            {
+                'deployment': {
+                    'position_m': {'x': 0.06, 'y': 0.0, 'z': -0.03},
+                    'orientation_rad': {'yaw': 0.1, 'pitch': 0.16, 'roll': -0.05},
+                }
+            }
+        )
+        + '\n'
+    )
+    single_output_dir = tmp_path / 'single-out'
+    subprocess.run(
+        [
+            sys.executable,
+            str(SINGLE_GENERATOR),
+            '--mode',
+            'experiment',
+            '--run-id',
+            'pytest-single',
+            '--config',
+            str(single_config),
+            '--output-dir',
+            str(single_output_dir),
+            '--source-model',
+            str(SOURCE_MODEL),
+            '--experiment-world-template',
+            str(SINGLE_WORLD_TEMPLATE),
+            '--calibration-world-template',
+            str(CALIBRATION_WORLD_TEMPLATE),
+        ],
+        check=True,
+    )
+
+    fleet_manifest_path = write_single_equivalent_manifest(tmp_path)
+    fleet_output_dir = tmp_path / 'fleet-out'
+    subprocess.run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            '--fleet-config',
+            str(fleet_manifest_path),
+            '--run-id',
+            'pytest-fleet-single',
+            '--output-dir',
+            str(fleet_output_dir),
+            '--source-model',
+            str(SOURCE_MODEL),
+            '--world-template',
+            str(WORLD_TEMPLATE),
+            '--root-dir',
+            str(ROOT),
+        ],
+        check=True,
+    )
+
+    single_manifest = json.loads((single_output_dir / 'manifest.json').read_text())
+    fleet_manifest = json.loads((fleet_output_dir / 'manifest.json').read_text())
+    assert single_manifest['runtime_profile'] == 'single_equivalent'
+    assert fleet_manifest['runtime_profile'] == 'single_equivalent'
+    assert single_manifest['physics'] == fleet_manifest['physics']
+    assert single_manifest['fdm_exchange'] == fleet_manifest['fdm_exchange']
+
+    single_world_root = ET.fromstring((single_output_dir / single_manifest['runtime_world_relative_path']).read_text())
+    fleet_world_root = ET.fromstring((fleet_output_dir / fleet_manifest['runtime_world_relative_path']).read_text())
+    assert single_world_root.findtext('.//physics/max_step_size') == fleet_world_root.findtext('.//physics/max_step_size')
+
+    single_model_root = ET.fromstring((single_output_dir / single_manifest['runtime_model_relative_path']).read_text())
+    fleet_model_root = ET.fromstring(
+        (fleet_output_dir / 'models' / 'iris_with_camera_experiment_pytest_fleet_single_drone_1' / 'model.sdf').read_text()
+    )
+    assert _sensor_signature(single_model_root, 'camera') == _sensor_signature(fleet_model_root, 'camera')
+    assert _sensor_signature(single_model_root, 'chase_camera') == _sensor_signature(fleet_model_root, 'chase_camera')
+    assert _ardupilot_plugin_signature(single_model_root) == _ardupilot_plugin_signature(fleet_model_root)
+
+    single_alate = json.loads((single_output_dir / single_manifest['drones'][0]['alate_config_relative_path']).read_text())
+    fleet_alate = json.loads((fleet_output_dir / 'runtime' / 'drone_1' / 'uav.visual.sitl.json').read_text())
+    assert _normalize_autopilot_master(single_alate['autopilot']['master']) == ('tcp', 5762)
+    assert _normalize_autopilot_master(fleet_alate['autopilot']['master']) == ('tcp', 5762)
+    single_alate['autopilot']['master'] = 'tcp:HOST:5762'
+    fleet_alate['autopilot']['master'] = 'tcp:HOST:5762'
+    assert single_alate == fleet_alate
