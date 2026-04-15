@@ -6,8 +6,15 @@ import argparse
 import json
 import math
 import re
+import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from vehicle_slice import build_single_vehicle_slice, render_alate_config, render_ros_alate_config, render_ros_nemala_config
 
 BASE_RUNTIME_MODEL_NAME = "iris_with_camera"
 CALIBRATION_CONTROL_JOINTS = (
@@ -292,7 +299,15 @@ def generate_runtime_world(template_path: Path, runtime_model_name: str, mode: s
     return tree
 
 
-def emit_manifest(output_dir: Path, mode: str, run_id: str, runtime_model_name: str, world_filename: str, pose: dict[str, float]) -> None:
+def emit_manifest(
+    output_dir: Path,
+    mode: str,
+    run_id: str,
+    runtime_model_name: str,
+    world_filename: str,
+    pose: dict[str, float],
+    drone: dict,
+) -> None:
     active_topics = {
         "deployed": "/mars/visual/deployed_camera",
         "chase": "/mars/visual/chase_camera",
@@ -331,12 +346,24 @@ def emit_manifest(output_dir: Path, mode: str, run_id: str, runtime_model_name: 
         "calibration_joint_names": list(CALIBRATION_CONTROL_JOINTS) if mode == "calib" else [],
         "drones": [
             {
-                "id": "drone_1",
-                "index": 0,
-                "namespace": "",
+                "id": drone["id"],
+                "index": drone["index"],
+                "namespace": drone["namespace"],
+                "sitl_host": drone["sitl_host"],
                 "runtime_model_name": runtime_model_name,
+                "serial0_port": drone["serial0_port"],
+                "mavlink_port": drone["mavlink_port"],
+                "mavlink_aux_port": drone["mavlink_aux_port"],
+                "fdm_port_in": drone["fdm_port_in"],
+                "fdm_port_out": drone["fdm_port_out"],
+                "gst_udp_port": drone["gst_udp_port"],
+                "proxy_name": drone["proxy_name"],
+                "proxy_endpoints": drone["proxy_endpoints"],
                 "camera_topics": active_topics,
                 "camera_deployment": pose,
+                "alate_config_relative_path": drone["runtime_paths"]["alate"],
+                "ros_alate_config_relative_path": drone["runtime_paths"]["ros_alate"],
+                "ros_nemala_config_relative_path": drone["runtime_paths"]["ros_nemala"],
                 "base_link_name": "iris_with_standoffs::base_link",
                 "mount_link_name": "deployed_camera_rigid_mount_link",
                 "optical_link_name": "deployed_camera_optical_link",
@@ -365,21 +392,66 @@ def emit_manifest(output_dir: Path, mode: str, run_id: str, runtime_model_name: 
         f"export VISUAL_DEPLOYMENT_YAW='{pose['yaw']:.6f}'",
         f"export VISUAL_DEPLOYMENT_PITCH='{pose['pitch']:.6f}'",
         f"export VISUAL_DEPLOYMENT_ROLL='{pose['roll']:.6f}'",
+        f"export VISUAL_PRIMARY_DRONE_ID='{drone['id']}'",
+        f"export VISUAL_PRIMARY_PROXY_NAME='{drone['proxy_name']}'",
+        f"export VISUAL_PRIMARY_SITL_HOST='{drone['sitl_host']}'",
+        f"export VISUAL_PRIMARY_SERIAL0_PORT='{drone['serial0_port']}'",
+        f"export VISUAL_PRIMARY_MAVLINK_PORT='{drone['mavlink_port']}'",
+        f"export VISUAL_PRIMARY_MAVLINK_AUX_PORT='{drone['mavlink_aux_port']}'",
+        f"export VISUAL_PRIMARY_FDM_PORT_IN='{drone['fdm_port_in']}'",
+        f"export VISUAL_PRIMARY_FDM_PORT_OUT='{drone['fdm_port_out']}'",
+        f"export VISUAL_PRIMARY_PROXY_SUBSCRIBERS='{drone['proxy_endpoints']['subscribers']}'",
+        f"export VISUAL_PRIMARY_PROXY_PUBLISHERS='{drone['proxy_endpoints']['publishers']}'",
+        f"export VISUAL_PRIMARY_PROXY_LOGGER='{drone['proxy_endpoints']['logger']}'",
+        f"export VISUAL_PRIMARY_ALATE_CONFIG_RELATIVE='{drone['runtime_paths']['alate']}'",
+        f"export VISUAL_PRIMARY_ROS_ALATE_CONFIG_RELATIVE='{drone['runtime_paths']['ros_alate']}'",
+        f"export VISUAL_PRIMARY_ROS_NEMALA_CONFIG_RELATIVE='{drone['runtime_paths']['ros_nemala']}'",
     ]
     (output_dir / "manifest.env").write_text("\n".join(env_lines) + "\n")
     (output_dir / "deployment.applied.json").write_text(json.dumps(manifest["deployment"], indent=2) + "\n")
 
+    single_tsv = output_dir / "drones.tsv"
+    with single_tsv.open("w") as handle:
+        handle.write(
+            "\t".join(
+                [
+                    drone["id"],
+                    drone["namespace"],
+                    drone["sitl_host"],
+                    runtime_model_name,
+                    str(drone["serial0_port"]),
+                    str(drone["mavlink_port"]),
+                    str(drone["mavlink_aux_port"]),
+                    str(drone["fdm_port_in"]),
+                    str(drone["fdm_port_out"]),
+                    drone["proxy_name"],
+                    drone["proxy_endpoints"]["subscribers"],
+                    drone["proxy_endpoints"]["publishers"],
+                    drone["proxy_endpoints"]["logger"],
+                    active_topics["chase"],
+                    active_topics["deployed"],
+                    drone["runtime_paths"]["alate"],
+                    drone["runtime_paths"]["ros_alate"],
+                    drone["runtime_paths"]["ros_nemala"],
+                ]
+            )
+            + "\n"
+        )
+
 
 def main() -> int:
     args = parse_args()
+    root_dir = Path(__file__).resolve().parents[1]
     pose = load_pose(args.config)
     if args.mode == "calib":
         validate_calibration_pose(pose)
     output_dir = args.output_dir
     model_dir_root = output_dir / "models"
     world_dir_root = output_dir / "worlds"
+    runtime_dir_root = output_dir / "runtime" / "drone_1"
     model_dir_root.mkdir(parents=True, exist_ok=True)
     world_dir_root.mkdir(parents=True, exist_ok=True)
+    runtime_dir_root.mkdir(parents=True, exist_ok=True)
 
     runtime_model_name = f"{BASE_RUNTIME_MODEL_NAME}_{args.mode}_{safe_slug(args.run_id)}"
     model_dir = model_dir_root / runtime_model_name
@@ -394,7 +466,20 @@ def main() -> int:
     world_filename = f"mars_iris_dual_view.{args.mode}.{safe_slug(args.run_id)}.sdf"
     write_xml(world_tree, world_dir_root / world_filename)
 
-    emit_manifest(output_dir, args.mode, args.run_id, runtime_model_name, world_filename, pose)
+    drone = build_single_vehicle_slice(
+        reference_path=args.config,
+        root_dir=root_dir,
+        camera_deployment_config=str(args.config),
+        alate_profile="config/alate/uav.visual.sitl.json",
+        ros_alate_profile="config/ros_alate/adapter.yaml",
+        ros_nemala_profile="config/ros_nemala/node_manager.yaml",
+    )
+    drone["runtime_model_name"] = runtime_model_name
+    render_alate_config(drone, runtime_dir_root / "uav.visual.sitl.json")
+    render_ros_alate_config(drone, runtime_dir_root / "ros_alate.adapter.yaml")
+    render_ros_nemala_config(drone, runtime_dir_root / "ros_nemala.node_manager.yaml")
+
+    emit_manifest(output_dir, args.mode, args.run_id, runtime_model_name, world_filename, pose, drone)
     return 0
 
 

@@ -79,7 +79,30 @@ wait_for_runtime_ready() {
   local selected_drone_id="$2"
   local timeout_sec="${3:-120}"
   local start_sec
+  local readiness_report endpoint readiness_drone_id
   start_sec="$(date +%s)"
+  readiness_drone_id="${selected_drone_id:-drone_1}"
+  readiness_report="$(dirname "${manifest_path}")/../diagnostics/readiness/${readiness_drone_id}.json"
+  endpoint="$(python3 - "$manifest_path" "$selected_drone_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+requested = sys.argv[2].strip()
+drones = manifest.get("drones", [])
+if not drones:
+    raise SystemExit("Manifest does not define any drones")
+if requested:
+    for drone in drones:
+        if drone["id"] == requested:
+            print(f"tcp:{drone['sitl_host']}:{drone['mavlink_aux_port']}")
+            raise SystemExit(0)
+    raise SystemExit(f"Unknown drone id {requested!r}")
+drone = drones[0]
+print(f"tcp:{drone['sitl_host']}:{drone['mavlink_aux_port']}")
+PY
+)"
 
   if python3 - "$manifest_path" <<'PY' >/dev/null
 import json, sys
@@ -93,7 +116,7 @@ PY
       hlc_logs="$(docker logs "${STACK_NAME}-${selected_drone_id}-hlc" 2>&1 || true)"
       mc_logs="$(docker logs "${STACK_NAME}-${selected_drone_id}-mc" 2>&1 || true)"
       if grep -q 'HLC entering state: Ready' <<<"${hlc_logs}" && grep -q 'MissionControl entering state: Standby' <<<"${mc_logs}"; then
-        return 0
+        break
       fi
       if [ $(( $(date +%s) - start_sec )) -ge "${timeout_sec}" ]; then
         printf 'Timed out waiting for HLC/MC readiness of %s.\n' "${selected_drone_id}" >&2
@@ -108,7 +131,7 @@ PY
     hlc_logs="$(docker logs "${STACK_NAME}-hlc" 2>&1 || true)"
     mc_logs="$(docker logs "${STACK_NAME}-mc" 2>&1 || true)"
     if grep -q 'HLC entering state: Ready' <<<"${hlc_logs}" && grep -q 'MissionControl entering state: Standby' <<<"${mc_logs}"; then
-      return 0
+      break
     fi
     if [ $(( $(date +%s) - start_sec )) -ge "${timeout_sec}" ]; then
       printf 'Timed out waiting for HLC/MC readiness.\n' >&2
@@ -116,6 +139,29 @@ PY
     fi
     sleep 1
   done
+
+  readiness_cmd=(
+    docker run --rm
+    --network "${NETWORK}"
+    -v "${ROOT_DIR}:/workspace/root:ro"
+    -v "${run_dir}:/workspace/run:rw"
+    --entrypoint python3
+    "${IMAGE}"
+    /workspace/root/scripts/drone_readiness.py
+    --timeout-sec 30
+    --clear-prearm-window-sec 3
+    --report "/workspace/run/diagnostics/readiness/${readiness_drone_id}.json"
+  )
+  if [ "${profile_enabled}" = '1' ]; then
+    readiness_cmd+=(--input-dir "/workspace/run/diagnostics/profile/mavlink/${readiness_drone_id}")
+  else
+    readiness_cmd+=(--endpoint "${endpoint}")
+  fi
+  if ! "${readiness_cmd[@]}"; then
+    printf 'MAVLink readiness check failed. See %s\n' "${readiness_report}" >&2
+    return 1
+  fi
+  return 0
 }
 
 ensure_visual_stack() {

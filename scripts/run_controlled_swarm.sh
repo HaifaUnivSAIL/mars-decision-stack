@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
 usage() {
   cat <<EOF
 Usage:
-  $0 --count N [--drone ID] [--headless] [--profile]
+  $0 --count N [--drone ID] [--headless] [--profile] [--runtime-profile NAME]
   $0 --drone ID
   $0 --fleet PATH [--drone ID] [--headless] [--profile]
   $0 --help
@@ -19,6 +19,8 @@ Examples:
 Behavior:
   - With --count N, generate a fleet manifest for N drones, start the visual swarm,
     and prepare per-drone keyboard teleop params automatically.
+  - Count-based bringup defaults to runtime profile single_equivalent for N=1 and
+    fleet_visual_optimized for N>1 unless --runtime-profile is provided.
   - With --drone ID, attach a keyboard teleop session to the selected drone in the
     currently running swarm stack.
   - With both --count and --drone, start the swarm first and then attach to that drone.
@@ -31,6 +33,7 @@ fleet_config=""
 visual_gui="${VISUAL_GUI:-1}"
 dry_run=0
 profile_enabled=0
+runtime_profile=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -70,6 +73,14 @@ while [ "$#" -gt 0 ]; do
     --profile)
       profile_enabled=1
       ;;
+    --runtime-profile)
+      shift
+      if [ "$#" -eq 0 ]; then
+        printf 'Missing value for --runtime-profile\n' >&2
+        exit 1
+      fi
+      runtime_profile="$1"
+      ;;
     --help|-h)
       usage
       exit 0
@@ -88,10 +99,23 @@ if [ -n "${count}" ] && [ -n "${fleet_config}" ]; then
   exit 1
 fi
 
+if [ -n "${runtime_profile}" ] && [ -n "${fleet_config}" ]; then
+  printf 'Use --runtime-profile only with --count. Fleet manifests should carry their own runtime profile.\n' >&2
+  exit 1
+fi
+
 if [ -n "${count}" ]; then
   if ! [[ "${count}" =~ ^[0-9]+$ ]] || [ "${count}" -lt 1 ]; then
     printf 'Drone count must be a positive integer. Got: %s\n' "${count}" >&2
     exit 1
+  fi
+fi
+
+if [ -z "${runtime_profile}" ] && [ -n "${count}" ]; then
+  if [ "${count}" -eq 1 ]; then
+    runtime_profile="single_equivalent"
+  else
+    runtime_profile="fleet_visual_optimized"
   fi
 fi
 
@@ -117,40 +141,24 @@ stack_running() {
 generate_manifest_from_count() {
   local output_path="$1"
   local requested_count="$2"
-  python3 - "$output_path" "$requested_count" <<'PY'
+  local requested_runtime_profile="$3"
+  python3 - "$output_path" "$requested_count" "$requested_runtime_profile" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 output_path = Path(sys.argv[1])
 count = int(sys.argv[2])
+runtime_profile = sys.argv[3]
 
 manifest = {
     "active_drone_id": "drone_1",
     "defaults": {
         "camera_deployment_config": "config/visual/camera.deployment.json",
-        "alate_profile": "config/alate/uav.visual.fleet.sitl.json",
+        "alate_profile": "config/alate/uav.visual.sitl.json",
         "ros_alate_profile": "config/ros_alate/adapter.yaml",
         "ros_nemala_profile": "config/ros_nemala/node_manager.yaml",
-        "camera_streams": {
-            "deployed": {
-                "width": 640,
-                "height": 480,
-                "update_rate_hz": 10.0,
-            },
-            "chase": {
-                "width": 960,
-                "height": 540,
-                "update_rate_hz": 15.0,
-            },
-        },
-        "rendering": {
-            "sun_cast_shadows": False,
-        },
-        "physics": {
-            "max_step_size": 0.02,
-            "real_time_factor": 1.0,
-        },
+        "runtime_profile": runtime_profile,
     },
     "drones": [],
 }
@@ -312,7 +320,7 @@ attach_teleop() {
 if [ -n "${count}" ] || [ -n "${fleet_config}" ]; then
   if [ -z "${fleet_config}" ]; then
     fleet_config="${LOG_DIR}/runtime/controlled_swarm.requested.json"
-    generate_manifest_from_count "${fleet_config}" "${count}"
+    generate_manifest_from_count "${fleet_config}" "${count}" "${runtime_profile}"
   fi
 
   if [ "${dry_run}" = "1" ]; then

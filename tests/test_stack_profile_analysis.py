@@ -268,6 +268,60 @@ def yaw_spin_drone_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
     }
 
 
+def forced_land_after_partial_climb_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
+    ros_events = [
+        {'wall_time_epoch_sec': '1.0', 'monotonic_sec': '1.0', 'ros_time_sec': '1.0', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Standby'})},
+        {'wall_time_epoch_sec': '1.1', 'monotonic_sec': '1.1', 'ros_time_sec': '1.1', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_state', 'event_type': 'high_level_control_state', 'payload_json': json.dumps({'hlc_state_name': 'Ready'})},
+        {'wall_time_epoch_sec': '2.0', 'monotonic_sec': '2.0', 'ros_time_sec': '2.0', 'drone_id': drone_id, 'topic_name': 'alate_input_operator_command', 'event_type': 'input_operator_command', 'payload_json': json.dumps({'op_com_name': 'takeoff'})},
+        {'wall_time_epoch_sec': '2.05', 'monotonic_sec': '2.05', 'ros_time_sec': '2.05', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'TakingOff'})},
+        {'wall_time_epoch_sec': '2.06', 'monotonic_sec': '2.06', 'ros_time_sec': '2.06', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_state', 'event_type': 'high_level_control_state', 'payload_json': json.dumps({'hlc_state_name': 'Takeoff'})},
+        {'wall_time_epoch_sec': '2.2', 'monotonic_sec': '2.2', 'ros_time_sec': '2.2', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_state', 'event_type': 'high_level_control_state', 'payload_json': json.dumps({'hlc_state_name': 'GainingAltitude'})},
+        {'wall_time_epoch_sec': '3.4', 'monotonic_sec': '3.4', 'ros_time_sec': '3.4', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_telemetry', 'event_type': 'hlc_telemetry', 'payload_json': json.dumps({'altitude': 1.1, 'yaw': 0.4, 'armed': True, 'mode': 'GUIDED', 'state': 'ACTIVE'})},
+        {'wall_time_epoch_sec': '3.8', 'monotonic_sec': '3.8', 'ros_time_sec': '3.8', 'drone_id': drone_id, 'topic_name': 'alate_output_high_level_control_state', 'event_type': 'high_level_control_state', 'payload_json': json.dumps({'hlc_state_name': 'Landing'})},
+        {'wall_time_epoch_sec': '3.85', 'monotonic_sec': '3.85', 'ros_time_sec': '3.85', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Landing'})},
+    ]
+    pose_rows = [
+        {'wall_time_epoch_sec': '2.0', 'monotonic_sec': '2.0', 'sim_time_sec': '1.0', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'pose_backlog_sec': '0.2'},
+        {'wall_time_epoch_sec': '3.4', 'monotonic_sec': '3.4', 'sim_time_sec': '2.4', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '1.1', 'roll': '0', 'pitch': '0', 'yaw': '0.4', 'pose_backlog_sec': '0.3'},
+        {'wall_time_epoch_sec': '4.2', 'monotonic_sec': '4.2', 'sim_time_sec': '3.2', 'drone_id': drone_id, 'entity_name': 'iris', 'x': '0.0', 'y': '0.0', 'z': '0.1', 'roll': '0', 'pitch': '0', 'yaw': '0.45', 'pose_backlog_sec': '0.3'},
+    ]
+    heartbeats = [
+        {'host_time_sec': '2.15', 'base_mode': '128', 'custom_mode': '4', 'system_status': '4', 'mav_type': '2', 'autopilot': '3', 'mode_string': 'GUIDED', 'armed': 'true'},
+        {'host_time_sec': '3.6', 'base_mode': '128', 'custom_mode': '9', 'system_status': '4', 'mav_type': '2', 'autopilot': '3', 'mode_string': 'LAND', 'armed': 'true'},
+    ]
+    servo = [
+        {'host_time_sec': '2.0', 'time_usec': '1', 'servo1_raw': '1000', 'servo2_raw': '1000', 'servo3_raw': '1000', 'servo4_raw': '1000'},
+        {'host_time_sec': '2.3', 'time_usec': '2', 'servo1_raw': '1020', 'servo2_raw': '1005', 'servo3_raw': '1000', 'servo4_raw': '995'},
+    ]
+    attitude = [
+        {'host_time_sec': '2.0', 'time_boot_ms': '100', 'roll': '0', 'pitch': '0', 'yaw': '0.0', 'rollspeed': '0', 'pitchspeed': '0', 'yawspeed': '0.0'},
+        {'host_time_sec': '3.0', 'time_boot_ms': '200', 'roll': '0', 'pitch': '0', 'yaw': '0.35', 'rollspeed': '0', 'pitchspeed': '0', 'yawspeed': '0.4'},
+    ]
+    local_position = [
+        {'host_time_sec': '2.0', 'time_boot_ms': '100', 'x': '0.0', 'y': '0.0', 'z': '0.0', 'vx': '0.0', 'vy': '0.0', 'vz': '0.0'},
+        {'host_time_sec': '3.4', 'time_boot_ms': '240', 'x': '0.0', 'y': '0.0', 'z': '-1.1', 'vx': '0.0', 'vy': '0.0', 'vz': '-0.5'},
+    ]
+    statustext = []
+    component_logs = {
+        'autopilot.log': [
+            {'component': 'autopilot_dronekit', 'event_type': 'takeoff_sent', 'wall_time_epoch_sec': 2.08, 'drone_id': drone_id, 'altitude': 5.0},
+        ],
+        'manual_runtime_test.log': [
+            {'component': 'manual_runtime_test', 'event_type': 'operator_command_published', 'wall_time_epoch_sec': 2.0, 'drone_id': drone_id, 'command': 'takeoff'},
+        ],
+    }
+    return {
+        'ros_events': ros_events,
+        'pose_rows': pose_rows,
+        'heartbeat_rows': heartbeats,
+        'servo_rows': servo,
+        'attitude_rows': attitude,
+        'local_position_rows': local_position,
+        'statustext_rows': statustext,
+        'component_logs': component_logs,
+    }
+
+
 def prearm_drone_fixture(drone_id: str) -> dict[str, list[dict[str, object]]]:
     ros_events = [
         {'wall_time_epoch_sec': '1.0', 'monotonic_sec': '1.0', 'ros_time_sec': '1.0', 'drone_id': drone_id, 'topic_name': 'alate_output_mission_control_state', 'event_type': 'mission_control_state', 'payload_json': json.dumps({'mc_state_name': 'Standby'})},
@@ -438,6 +492,24 @@ def test_analyze_stack_profile_swarm_failures(tmp_path: Path) -> None:
     assert control_summary['drones']['drone_1']['latest_takeoff']['outcome'] == 'yaw_spin_no_climb'
     assert control_summary['drones']['drone_2']['latest_takeoff']['outcome'] == 'prearm_blocked'
     assert 'Gyros inconsistent' in control_summary['drones']['drone_2']['latest_takeoff']['last_warning_text']
+
+
+def test_analyze_stack_profile_forced_landing_beats_partial_climb(tmp_path: Path) -> None:
+    run_dir = make_run(
+        tmp_path,
+        'forced-land-run',
+        'fleet',
+        {'drone_1': forced_land_after_partial_climb_fixture('drone_1')},
+        rtf=0.92,
+        backlog=0.3,
+        cpu_peak=120.0,
+    )
+    subprocess.run([sys.executable, str(ANALYZE), '--run-dir', str(run_dir)], check=True)
+
+    profile_dir = run_dir / 'diagnostics' / 'profile'
+    control_summary = json.loads((profile_dir / 'control_summary.json').read_text())
+
+    assert control_summary['drones']['drone_1']['latest_takeoff']['outcome'] == 'forced_land_after_takeoff_timeout'
 
 
 def test_compare_stack_profiles_includes_control_section(tmp_path: Path) -> None:

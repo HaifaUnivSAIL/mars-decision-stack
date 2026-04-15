@@ -3,7 +3,6 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
 
-visual_runtime_config_src="${CONFIG_DIR}/alate/uav.visual.sitl.json"
 camera_deployment_config_src="${CONFIG_DIR}/visual/camera.deployment.json"
 visual_runtime_state_dir="${LOG_DIR}/runtime"
 visual_mode_file="${visual_runtime_state_dir}/visual.mode"
@@ -62,6 +61,10 @@ profile_state_path="${profile_output_dir}/profile.state.json"
 profile_supervisor_pid_file="${profile_output_dir}/profile.supervisor.pid"
 visual_runtime_config_host="${current_run_dir}/uav.visual.sitl.json"
 visual_runtime_config="${current_run_mount}/uav.visual.sitl.json"
+generated_visual_runtime_config_host=""
+generated_visual_runtime_config=""
+generated_ros_alate_config=""
+generated_ros_nemala_config=""
 log_capture_pid_file="${current_run_dir}/log_capture.pids"
 
 mkdir -p "${visual_runtime_state_dir}" "${current_run_dir}" "${visual_assets_dir}" "${visual_tools_dir}" "${run_logs_dir}" "${run_diagnostics_dir}" "${profile_output_dir}"
@@ -146,6 +149,13 @@ start_log_capture() {
   local log_file="$2"
   nohup bash -lc "docker logs -f '${container_name}' >> '${log_file}' 2>&1" >/dev/null 2>&1 &
   echo "$!" >>"${log_capture_pid_file}"
+}
+
+create_single_ipc_directory() {
+  docker run --rm \
+    -v "${VOLUME}:/tmp/nemala" \
+    "${IMAGE}" \
+    bash -lc "mkdir -p '/tmp/nemala/${VISUAL_PRIMARY_DRONE_ID}'"
 }
 
 profile_env_args=()
@@ -462,14 +472,18 @@ python3 "${ROOT_DIR}/scripts/generate_visual_assets.py" \
 
 # shellcheck disable=SC1090
 source "${visual_assets_dir}/manifest.env"
+create_single_ipc_directory
+generated_visual_runtime_config_host="${visual_assets_dir}/${VISUAL_PRIMARY_ALATE_CONFIG_RELATIVE}"
+generated_visual_runtime_config="${current_run_mount}/visual_assets/${VISUAL_PRIMARY_ALATE_CONFIG_RELATIVE}"
+generated_ros_alate_config="${current_run_mount}/visual_assets/${VISUAL_PRIMARY_ROS_ALATE_CONFIG_RELATIVE}"
+generated_ros_nemala_config="${current_run_mount}/visual_assets/${VISUAL_PRIMARY_ROS_NEMALA_CONFIG_RELATIVE}"
 write_run_manifest
 cp "${visual_assets_dir}/manifest.json" "${visual_manifest_file}"
 cp "${visual_assets_dir}/manifest.env" "${visual_manifest_env_file}"
 printf '%s\n' "${visual_mode}" >"${visual_mode_file}"
 printf '%s\n' "${current_run_dir}" >"${visual_current_run_file}"
 
-sed "s#\"master\": \"tcp:sitl:[0-9]\\+\"#\"master\": \"tcp:sitl:5760\"#" \
-  "${visual_runtime_config_src}" >"${visual_runtime_config_host}"
+cp "${generated_visual_runtime_config_host}" "${visual_runtime_config_host}"
 cp "${visual_runtime_config_host}" "${current_run_dir}/uav.visual.sitl.generated.json"
 
 capture_basic_diagnostics
@@ -554,8 +568,8 @@ sitl_runtime_host="$(
 if [ -z "${sitl_runtime_host}" ]; then
   sitl_runtime_host='sitl'
 fi
-sed "s#\"master\": \"tcp:sitl:[0-9]\\+\"#\"master\": \"tcp:sitl:${visual_mavlink_port}\"#" \
-  "${visual_runtime_config_src}" >"${visual_runtime_config_host}"
+sed "s#\"master\": \"tcp:[^\"]\\+\"#\"master\": \"tcp:${VISUAL_PRIMARY_SITL_HOST}:${visual_mavlink_port}\"#" \
+  "${generated_visual_runtime_config_host}" >"${visual_runtime_config_host}"
 cp "${visual_runtime_config_host}" "${current_run_dir}/uav.visual.sitl.generated.json"
 start_profile_supervisor "sitl" "${profile_mavlink_port}"
 
@@ -565,7 +579,7 @@ docker run -d --rm \
   -v "${VOLUME}:/tmp/nemala" \
   -v "${current_run_dir}:${current_run_mount}:ro" \
   "${NEMALA_TOOLS_IMAGE}" \
-  proxy uav "${visual_runtime_config}"
+  proxy "${VISUAL_PRIMARY_PROXY_NAME}" "${visual_runtime_config}"
 start_log_capture "${STACK_NAME}-proxy" "${run_logs_dir}/proxy.log"
 
 docker run -d --rm \
@@ -574,7 +588,7 @@ docker run -d --rm \
   -v "${VOLUME}:/tmp/nemala" \
   -v "${LOG_DIR}:/stack/logs" \
   "${NEMALA_TOOLS_IMAGE}" \
-  log ipc:///tmp/nemala/alate_log
+  log "${VISUAL_PRIMARY_PROXY_LOGGER}"
 start_log_capture "${STACK_NAME}-logger" "${run_logs_dir}/nemala-logger.log"
 
 log "Observed MAVLink traffic on tcp:sitl:${visual_mavlink_port}"
@@ -588,7 +602,7 @@ docker run -d --rm \
   -v "${VOLUME}:/tmp/nemala" \
   -v "${current_run_dir}:${current_run_mount}:ro" \
   "${IMAGE}" \
-  ./mc uav "${visual_runtime_config}"
+  ./mc "${VISUAL_PRIMARY_PROXY_NAME}" "${visual_runtime_config}"
 start_log_capture "${STACK_NAME}-mc" "${run_logs_dir}/mc.log"
 
 docker run -d --rm \
@@ -600,7 +614,7 @@ docker run -d --rm \
   -v "${VOLUME}:/tmp/nemala" \
   -v "${current_run_dir}:${current_run_mount}:ro" \
   "${IMAGE}" \
-  ./hlc uav "${visual_runtime_config}"
+  ./hlc "${VISUAL_PRIMARY_PROXY_NAME}" "${visual_runtime_config}"
 start_log_capture "${STACK_NAME}-hlc" "${run_logs_dir}/hlc.log"
 
 sleep 2
@@ -613,9 +627,9 @@ docker run -d --rm \
   -e PYTHONUNBUFFERED=1 \
   "${profile_env_args[@]}" \
   -v "${VOLUME}:/tmp/nemala" \
-  -v "${CONFIG_DIR}:/stack/config:ro" \
+  -v "${current_run_dir}:${current_run_mount}:ro" \
   "${IMAGE}" \
-  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_alate adapter --ros-args --log-level debug --params-file /stack/config/ros_alate/adapter.yaml"
+  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_alate adapter --ros-args --log-level debug --params-file ${generated_ros_alate_config}"
 start_log_capture "${STACK_NAME}-ros-alate" "${run_logs_dir}/ros-alate.log"
 
 docker run -d --rm \
@@ -626,9 +640,9 @@ docker run -d --rm \
   -e PYTHONUNBUFFERED=1 \
   "${profile_env_args[@]}" \
   -v "${VOLUME}:/tmp/nemala" \
-  -v "${CONFIG_DIR}:/stack/config:ro" \
+  -v "${current_run_dir}:${current_run_mount}:ro" \
   "${IMAGE}" \
-  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_nemala node_manager --ros-args --log-level debug --params-file /stack/config/ros_nemala/node_manager.yaml"
+  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_nemala node_manager --ros-args --log-level debug --params-file ${generated_ros_nemala_config}"
 start_log_capture "${STACK_NAME}-ros-nemala" "${run_logs_dir}/ros-nemala.log"
 
 docker run -d --rm \

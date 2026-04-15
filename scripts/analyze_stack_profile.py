@@ -865,6 +865,7 @@ class ProfileAnalyzer:
             reached_airborne = 'Airborne' in hlc_sequence
             reached_performing_mission = 'PerformingMission' in mc_sequence
             saw_landing = 'Landing' in hlc_sequence or 'Landing' in mc_sequence
+            reached_success_terminal = reached_airborne or reached_performing_mission
             warnings = self._collect_warning_events(drone_id, start, end)
             last_warning = warnings[-1]['text'] if warnings else ''
             has_prearm_warning = any('prearm' in warning['text'].lower() for warning in warnings)
@@ -873,10 +874,10 @@ class ProfileAnalyzer:
 
             if has_prearm_warning and first_armed is None:
                 outcome = 'prearm_blocked'
-            elif altitude_1_0 is not None or reached_airborne or reached_performing_mission:
-                outcome = 'success_climb'
-            elif saw_landing:
+            elif saw_landing and not reached_success_terminal:
                 outcome = 'forced_land_after_takeoff_timeout'
+            elif reached_success_terminal or (altitude_1_0 is not None and not saw_landing):
+                outcome = 'success_climb'
             elif first_armed is not None and (math.degrees(max_yaw_delta) >= YAW_SPIN_THRESHOLD_DEG or (yaw_rate_stats['max_abs_rad_s'] or 0.0) >= YAW_RATE_SPIN_THRESHOLD_RAD_S):
                 outcome = 'yaw_spin_no_climb'
             elif first_armed is not None:

@@ -67,6 +67,30 @@ def write_fleet_manifest(tmp_path: Path) -> Path:
     return manifest_path
 
 
+def write_single_equivalent_manifest(tmp_path: Path) -> Path:
+    manifest_path = tmp_path / 'visual.single_equivalent.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'active_drone_id': 'drone_1',
+                'defaults': {
+                    'camera_deployment_config': 'config/visual/camera.deployment.json',
+                    'alate_profile': 'config/alate/uav.visual.sitl.json',
+                    'ros_alate_profile': 'config/ros_alate/adapter.yaml',
+                    'ros_nemala_profile': 'config/ros_nemala/node_manager.yaml',
+                    'runtime_profile': 'single_equivalent',
+                },
+                'drones': [
+                    {'id': 'drone_1', 'spawn': {'x': 0.0, 'y': 0.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                ],
+            },
+            indent=2,
+        )
+        + '\n'
+    )
+    return manifest_path
+
+
 def test_fleet_manifest_derives_unique_namespaces_ports_and_topics(tmp_path: Path) -> None:
     module = load_module(FLEET_MANIFEST_MODULE, 'fleet_manifest')
     manifest_path = write_fleet_manifest(tmp_path)
@@ -90,6 +114,21 @@ def test_fleet_manifest_derives_unique_namespaces_ports_and_topics(tmp_path: Pat
     assert fleet['drones'][1]['proxy_endpoints']['subscribers'].endswith('/drone_2/alate_subscribers')
     assert fleet['drones'][0]['camera_topics']['deployed'] == '/mars/drone_1/visual/deployed_camera'
     assert fleet['drones'][1]['camera_topics']['chase'] == '/mars/drone_2/visual/chase_camera'
+
+
+def test_single_equivalent_profile_matches_single_runtime_defaults(tmp_path: Path) -> None:
+    module = load_module(FLEET_MANIFEST_MODULE, 'fleet_manifest')
+    manifest_path = write_single_equivalent_manifest(tmp_path)
+
+    fleet = module.load_fleet_definition(manifest_path, ROOT)
+
+    assert fleet['runtime_profile'] == 'single_equivalent'
+    assert fleet['physics']['max_step_size'] == 0.001
+    assert fleet['rendering']['sun_cast_shadows'] is True
+    assert fleet['camera_streams']['chase']['width'] == 1280
+    assert fleet['camera_streams']['chase']['update_rate_hz'] == 30.0
+    assert fleet['sensor_behavior']['deployed']['always_on'] is True
+    assert fleet['sensor_behavior']['deployed']['remove_plugins'] == []
 
 
 def test_fleet_generator_emits_unique_world_models_and_configs(tmp_path: Path) -> None:
@@ -176,3 +215,49 @@ def test_fleet_generator_emits_unique_world_models_and_configs(tmp_path: Path) -
     ros_nemala_cfg = yaml.safe_load((output_dir / 'runtime' / 'drone_2' / 'ros_nemala.node_manager.yaml').read_text())
     assert '/drone_2/nemala_node_manager' in ros_nemala_cfg
     assert ros_nemala_cfg['/drone_2/nemala_node_manager']['ros__parameters']['proxy_endpoint_publishers'].endswith('/drone_2/alate_publishers')
+
+
+def test_single_equivalent_generator_keeps_single_like_sensor_behavior(tmp_path: Path) -> None:
+    manifest_path = write_single_equivalent_manifest(tmp_path)
+    output_dir = tmp_path / 'out-single-equivalent'
+    subprocess.run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            '--fleet-config',
+            str(manifest_path),
+            '--run-id',
+            'pytest-single-equivalent',
+            '--output-dir',
+            str(output_dir),
+            '--source-model',
+            str(SOURCE_MODEL),
+            '--world-template',
+            str(WORLD_TEMPLATE),
+            '--root-dir',
+            str(ROOT),
+        ],
+        check=True,
+    )
+
+    manifest = json.loads((output_dir / 'manifest.json').read_text())
+    assert manifest['runtime_profile'] == 'single_equivalent'
+    assert manifest['physics']['max_step_size'] == 0.001
+    assert manifest['rendering']['sun_cast_shadows'] is True
+
+    model_root = ET.fromstring(
+        (output_dir / 'models' / 'iris_with_camera_experiment_pytest_single_equivalent_drone_1' / 'model.sdf').read_text()
+    )
+    deployed_camera_sensor = model_root.find('.//sensor[@name="camera"]')
+    assert deployed_camera_sensor is not None
+    assert deployed_camera_sensor.find('./plugin[@name="CameraZoomPlugin"]') is not None
+    assert deployed_camera_sensor.find('./plugin[@name="GstCameraPlugin"]') is not None
+    assert deployed_camera_sensor.find('visualize').text == 'true'
+    assert deployed_camera_sensor.find('always_on').text == '1'
+
+    chase_camera_sensor = model_root.find('.//sensor[@name="chase_camera"]')
+    assert chase_camera_sensor is not None
+    assert chase_camera_sensor.find('./camera/image/width').text == '1280'
+    assert chase_camera_sensor.find('./camera/image/height').text == '720'
+    assert chase_camera_sensor.find('update_rate').text == '30.000'
+    assert chase_camera_sensor.find('always_on').text == '1'

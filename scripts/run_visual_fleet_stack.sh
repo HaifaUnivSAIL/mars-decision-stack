@@ -43,6 +43,7 @@ visual_tools_dir="${current_run_dir}/tools"
 run_logs_dir="${current_run_dir}/logs"
 run_diagnostics_dir="${current_run_dir}/diagnostics"
 run_latency_dir="${run_diagnostics_dir}/latency"
+run_readiness_dir="${run_diagnostics_dir}/readiness"
 profile_output_dir="${run_diagnostics_dir}/profile"
 profile_manifest_path="${profile_output_dir}/profile.manifest.json"
 profile_state_path="${profile_output_dir}/profile.state.json"
@@ -50,7 +51,7 @@ profile_supervisor_pid_file="${profile_output_dir}/profile.supervisor.pid"
 log_capture_pid_file="${current_run_dir}/log_capture.pids"
 requested_fleet_config_copy="${current_run_dir}/visual.swarm.requested.json"
 
-mkdir -p "${visual_runtime_state_dir}" "${current_run_dir}" "${visual_assets_dir}" "${visual_tools_dir}" "${run_logs_dir}" "${run_diagnostics_dir}" "${run_latency_dir}" "${profile_output_dir}"
+mkdir -p "${visual_runtime_state_dir}" "${current_run_dir}" "${visual_assets_dir}" "${visual_tools_dir}" "${run_logs_dir}" "${run_diagnostics_dir}" "${run_latency_dir}" "${run_readiness_dir}" "${profile_output_dir}"
 : >"${log_capture_pid_file}"
 
 on_error() {
@@ -442,18 +443,22 @@ PY
 
 wait_for_drone_readiness() {
   local drone_id="$1"
-  local timeout_sec="${2:-120}"
+  local sitl_host="$2"
+  local mavlink_aux_port="$3"
+  local timeout_sec="${4:-120}"
   local start_sec
   local hlc_log_file mc_log_file
+  local readiness_report
   start_sec="$(date +%s)"
   hlc_log_file="${run_logs_dir}/${drone_id}/hlc.log"
   mc_log_file="${run_logs_dir}/${drone_id}/mc.log"
+  readiness_report="${run_readiness_dir}/${drone_id}.json"
 
   while true; do
     if [ -f "${hlc_log_file}" ] && [ -f "${mc_log_file}" ] && \
       grep -q 'HLC entering state: Ready' "${hlc_log_file}" && \
       grep -q 'MissionControl entering state: Standby' "${mc_log_file}"; then
-      return 0
+      break
     fi
     if [ $(( $(date +%s) - start_sec )) -ge "${timeout_sec}" ]; then
       printf 'Timed out waiting for readiness of %s.\n' "${drone_id}" >&2
@@ -461,6 +466,29 @@ wait_for_drone_readiness() {
     fi
     sleep 1
   done
+
+  local readiness_cmd=(
+    docker run --rm
+    --network "${NETWORK}"
+    -v "${ROOT_DIR}:/workspace/root:ro"
+    -v "${current_run_dir}:${current_run_mount}:rw"
+    --entrypoint python3
+    "${IMAGE}"
+    /workspace/root/scripts/drone_readiness.py
+    --timeout-sec 30
+    --clear-prearm-window-sec 3
+    --report "${current_run_mount}/diagnostics/readiness/${drone_id}.json"
+  )
+  if [ "${profile_enabled}" = '1' ]; then
+    readiness_cmd+=(--input-dir "${current_run_mount}/diagnostics/profile/mavlink/${drone_id}")
+  else
+    readiness_cmd+=(--endpoint "tcp:${sitl_host}:${mavlink_aux_port}")
+  fi
+  if ! "${readiness_cmd[@]}"; then
+    printf 'MAVLink readiness check failed for %s. See %s\n' "${drone_id}" "${readiness_report}" >&2
+    return 1
+  fi
+  return 0
 }
 
 if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
@@ -511,6 +539,7 @@ printf '%s\n' "${current_run_dir}" >"${visual_current_run_file}"
 capture_basic_diagnostics
 
 visual_gui="${VISUAL_GUI:-1}"
+headless_visual_routing="${VISUAL_HEADLESS_ACTIVE_STREAMS:-0}"
 visual_args=(
   -d
   --rm
@@ -566,17 +595,21 @@ docker run -d --rm \
   bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && sleep infinity"
 start_log_capture "${STACK_NAME}-decision-dev" "${run_logs_dir}/decision-dev.log"
 
-docker run -d --rm \
-  --name "${STACK_NAME}-visual-focus-router" \
-  --network "${NETWORK}" \
-  -e "GZ_PARTITION=${GZ_PARTITION}" \
-  -v "${current_run_dir}:${current_run_mount}:rw" \
-  --entrypoint python3 \
-  "${VISUAL_SIM_IMAGE}" \
-  "${current_run_mount}/tools/visual_focus_router.py" "${current_run_mount}/visual_assets/focus_router.json"
-start_log_capture "${STACK_NAME}-visual-focus-router" "${run_logs_dir}/visual-focus-router.log"
+start_visual_focus_router=0
+if [ "${visual_gui}" = '1' ] || [ "${headless_visual_routing}" = '1' ]; then
+  start_visual_focus_router=1
+  docker run -d --rm \
+    --name "${STACK_NAME}-visual-focus-router" \
+    --network "${NETWORK}" \
+    -e "GZ_PARTITION=${GZ_PARTITION}" \
+    -v "${current_run_dir}:${current_run_mount}:rw" \
+    --entrypoint python3 \
+    "${VISUAL_SIM_IMAGE}" \
+    "${current_run_mount}/tools/visual_focus_router.py" "${current_run_mount}/visual_assets/focus_router.json"
+  start_log_capture "${STACK_NAME}-visual-focus-router" "${run_logs_dir}/visual-focus-router.log"
+fi
 
-if [ "${profile_enabled}" != '1' ]; then
+if [ "${profile_enabled}" != '1' ] && [ "${start_visual_focus_router}" = '1' ]; then
   docker run -d --rm \
     --name "${STACK_NAME}-visual-latency-recorder" \
     --network "${NETWORK}" \
@@ -728,7 +761,7 @@ while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_
   # Stage the control slices one vehicle at a time. This keeps fleet bring-up
   # deterministic and avoids overloading the shared simulator before each drone
   # has fully reached its takeoff-capable ready state.
-  wait_for_drone_readiness "${drone_id}" 240
+  wait_for_drone_readiness "${drone_id}" "${sitl_host}" "${mavlink_aux_port}" 240
 
 done <"${visual_assets_dir}/drones.tsv"
 wait_for_focus_topics
@@ -755,6 +788,9 @@ if [ "${visual_gui}" = '1' ]; then
   printf 'Gazebo GUI was launched in %s and connected to the simulator server in %s.\n' "${STACK_NAME}-visual-gui" "${STACK_NAME}-visual-sim"
 else
   printf 'Gazebo is running headlessly in %s.\n' "${STACK_NAME}-visual-sim"
+  if [ "${start_visual_focus_router}" != '1' ]; then
+    printf 'Headless swarm routing is disabled, so active camera streams stay unsubscribed during control validation.\n'
+  fi
 fi
 if [ "${RUN_VISUAL_STACK_QUIET_HINTS:-0}" != '1' ]; then
   printf 'For keyboard flight control, run %s --drone %s\n' "${ROOT_DIR}/scripts/run_visual_teleop.sh" "${VISUAL_ACTIVE_DRONE_ID}"

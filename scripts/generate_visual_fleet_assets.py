@@ -5,11 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import xml.etree.ElementTree as ET
 
-import yaml
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from fleet_manifest import build_runtime_fleet
+from vehicle_slice import (
+    render_alate_config,
+    render_ros_alate_config,
+    render_ros_nemala_config,
+)
 
 CALIBRATION_CONTROL_JOINTS = (
     "deployed_camera_x_joint",
@@ -134,6 +142,20 @@ def remove_sensor_plugin(root: ET.Element, sensor_name: str, plugin_name: str) -
     for plugin in list(sensor.findall("plugin")):
         if plugin.get("name") == plugin_name:
             sensor.remove(plugin)
+
+
+def apply_sensor_behavior(
+    root: ET.Element,
+    sensor_name: str,
+    stream_settings: dict,
+    behavior: dict,
+) -> None:
+    set_sensor_image_size(root, sensor_name, int(stream_settings["width"]), int(stream_settings["height"]))
+    set_sensor_update_rate(root, sensor_name, float(stream_settings["update_rate_hz"]))
+    set_sensor_visualize(root, sensor_name, bool(behavior["visualize"]))
+    set_sensor_always_on(root, sensor_name, bool(behavior["always_on"]))
+    for plugin_name in behavior.get("remove_plugins", []):
+        remove_sensor_plugin(root, sensor_name, str(plugin_name))
 
 
 def ensure_pose_element(element: ET.Element) -> ET.Element:
@@ -287,20 +309,11 @@ def generate_runtime_model(source_model: Path, drone: dict, runtime_fleet: dict)
     set_sensor_topic(root, "camera", drone["camera_topics"]["deployed"])
     set_sensor_topic(root, "chase_camera", drone["camera_topics"]["chase"])
 
-    # Fleet mode keeps inactive drones subscriber-driven, but the active camera pair still needs
-    # enough fidelity to stay usable when displayed in large GUI panels.
     deployed_stream = runtime_fleet["camera_streams"]["deployed"]
     chase_stream = runtime_fleet["camera_streams"]["chase"]
-    set_sensor_image_size(root, "camera", int(deployed_stream["width"]), int(deployed_stream["height"]))
-    set_sensor_update_rate(root, "camera", float(deployed_stream["update_rate_hz"]))
-    set_sensor_visualize(root, "camera", False)
-    set_sensor_always_on(root, "camera", False)
-    set_sensor_image_size(root, "chase_camera", int(chase_stream["width"]), int(chase_stream["height"]))
-    set_sensor_update_rate(root, "chase_camera", float(chase_stream["update_rate_hz"]))
-    set_sensor_visualize(root, "chase_camera", False)
-    set_sensor_always_on(root, "chase_camera", False)
-    remove_sensor_plugin(root, "camera", "CameraZoomPlugin")
-    remove_sensor_plugin(root, "camera", "GstCameraPlugin")
+    sensor_behavior = runtime_fleet["sensor_behavior"]
+    apply_sensor_behavior(root, "camera", deployed_stream, sensor_behavior["deployed"])
+    apply_sensor_behavior(root, "chase_camera", chase_stream, sensor_behavior["chase"])
 
     ardupilot_plugin = find_plugin(root, "ArduPilotPlugin")
     fdm_port_in = ardupilot_plugin.find("fdm_port_in")
@@ -343,50 +356,6 @@ def generate_runtime_world(template_path: Path, runtime_fleet: dict) -> ET.Eleme
     return tree
 
 
-def generate_alate_config(drone: dict, output_path: Path) -> None:
-    data = json.loads(Path(drone["alate_profile"]).read_text())
-    data["proxies"] = {
-        drone["proxy_name"]: {
-            "subscribers": drone["proxy_endpoints"]["subscribers"],
-            "publishers": drone["proxy_endpoints"]["publishers"],
-            "logger": drone["proxy_endpoints"]["logger"],
-        }
-    }
-    autopilot = dict(data.get("autopilot", {}))
-    autopilot["master"] = f"tcp:{drone['sitl_host']}:{drone['mavlink_port']}"
-    data["autopilot"] = autopilot
-    output_path.write_text(json.dumps(data, indent=2) + "\n")
-
-
-def _resolve_node_key(data: dict, node_name: str) -> str:
-    for key in data.keys():
-        if key == node_name or key == f"/{node_name}" or key.rsplit("/", 1)[-1] == node_name:
-            return key
-    return node_name
-
-
-def _extract_params(data: dict, node_name: str) -> dict:
-    resolved_node_name = _resolve_node_key(data, node_name)
-    return dict(data.get(resolved_node_name, {}).get("ros__parameters", {}))
-
-
-def generate_ros_alate_config(drone: dict, output_path: Path) -> None:
-    data = yaml.safe_load(Path(drone["ros_alate_profile"]).read_text())
-    params = _extract_params(data, "ros_alate_adapter")
-    params["proxy_endpoint_for_publishing"] = drone["proxy_endpoints"]["publishers"]
-    params["proxy_endpoint_for_subscribing"] = drone["proxy_endpoints"]["subscribers"]
-    fq_node_name = f"{drone['namespace']}/ros_alate_adapter"
-    output_path.write_text(yaml.safe_dump({fq_node_name: {"ros__parameters": params}}, sort_keys=False))
-
-
-def generate_ros_nemala_config(drone: dict, output_path: Path) -> None:
-    data = yaml.safe_load(Path(drone["ros_nemala_profile"]).read_text())
-    params = _extract_params(data, "nemala_node_manager")
-    params["proxy_endpoint_publishers"] = drone["proxy_endpoints"]["publishers"]
-    fq_node_name = f"{drone['namespace']}/nemala_node_manager"
-    output_path.write_text(yaml.safe_dump({fq_node_name: {"ros__parameters": params}}, sort_keys=False))
-
-
 def emit_manifest(output_dir: Path, runtime_fleet: dict, world_filename: str) -> None:
     drones_out: list[dict] = []
     for drone in runtime_fleet["drones"]:
@@ -408,9 +377,9 @@ def emit_manifest(output_dir: Path, runtime_fleet: dict, world_filename: str) ->
                 "proxy_endpoints": drone["proxy_endpoints"],
                 "camera_topics": drone["camera_topics"],
                 "camera_deployment": drone["camera_deployment"],
-                "alate_config_relative_path": f"runtime/{drone['id']}/uav.visual.sitl.json",
-                "ros_alate_config_relative_path": f"runtime/{drone['id']}/ros_alate.adapter.yaml",
-                "ros_nemala_config_relative_path": f"runtime/{drone['id']}/ros_nemala.node_manager.yaml",
+                "alate_config_relative_path": drone["runtime_paths"]["alate"],
+                "ros_alate_config_relative_path": drone["runtime_paths"]["ros_alate"],
+                "ros_nemala_config_relative_path": drone["runtime_paths"]["ros_nemala"],
                 "deployment_target_link_name": "deployed_camera_rigid_mount_link",
                 "base_link_name": "iris_with_standoffs::base_link",
                 "optical_link_name": "deployed_camera_optical_link",
@@ -422,9 +391,11 @@ def emit_manifest(output_dir: Path, runtime_fleet: dict, world_filename: str) ->
         "mode": runtime_fleet["mode"],
         "fleet": True,
         "manifest_path": runtime_fleet["manifest_path"],
+        "runtime_profile": runtime_fleet["runtime_profile"],
         "physics": runtime_fleet["physics"],
         "camera_streams": runtime_fleet["camera_streams"],
         "rendering": runtime_fleet["rendering"],
+        "sensor_behavior": runtime_fleet["sensor_behavior"],
         "runtime_world_name": runtime_fleet["runtime_world_name"],
         "runtime_world_relative_path": f"worlds/{world_filename}",
         "active_topics": runtime_fleet["active_topics"],
@@ -531,9 +502,9 @@ def main() -> int:
 
         runtime_dir = runtime_dir_root / drone["id"]
         runtime_dir.mkdir(parents=True, exist_ok=True)
-        generate_alate_config(drone, runtime_dir / "uav.visual.sitl.json")
-        generate_ros_alate_config(drone, runtime_dir / "ros_alate.adapter.yaml")
-        generate_ros_nemala_config(drone, runtime_dir / "ros_nemala.node_manager.yaml")
+        render_alate_config(drone, runtime_dir / "uav.visual.sitl.json")
+        render_ros_alate_config(drone, runtime_dir / "ros_alate.adapter.yaml")
+        render_ros_nemala_config(drone, runtime_dir / "ros_nemala.node_manager.yaml")
 
     world_tree = generate_runtime_world(args.world_template, runtime_fleet)
     world_filename = f"mars_iris_dual_view.fleet.{args.run_id}.sdf"

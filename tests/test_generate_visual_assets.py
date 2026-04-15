@@ -94,6 +94,7 @@ def test_experiment_generation_bakes_absolute_pose_and_world_runtime_model(tmp_p
     manifest = load_manifest(output_dir)
     model_path = output_dir / manifest['runtime_model_relative_path']
     world_path = output_dir / manifest['runtime_world_relative_path']
+    drone = manifest['drones'][0]
 
     model_root = ET.fromstring(model_path.read_text())
     world_root = ET.fromstring(world_path.read_text())
@@ -116,6 +117,19 @@ def test_experiment_generation_bakes_absolute_pose_and_world_runtime_model(tmp_p
     assert f'model://{runtime_model_name}' in include_uris
     assert manifest['deployment_target_link_name'] == 'deployed_camera_rigid_mount_link'
     assert manifest['calibration_joint_names'] == []
+    assert drone['proxy_name'] == 'drone_1'
+    assert drone['sitl_host'] == 'sitl'
+    assert drone['mavlink_port'] == 5762
+    assert drone['mavlink_aux_port'] == 5763
+    assert drone['proxy_endpoints']['publishers'].endswith('/drone_1/alate_publishers')
+
+    alate_config = json.loads((output_dir / drone['alate_config_relative_path']).read_text())
+    assert alate_config['autopilot']['master'] == 'tcp:sitl:5762'
+    assert list(alate_config['proxies'].keys()) == ['drone_1']
+
+    drones_tsv = (output_dir / 'drones.tsv').read_text().strip().split('\t')
+    assert drones_tsv[0] == 'drone_1'
+    assert drones_tsv[15] == drone['alate_config_relative_path']
 
 
 def test_calibration_generation_keeps_runtime_model_name_and_gui_binding(tmp_path: Path) -> None:
@@ -134,6 +148,8 @@ def test_calibration_generation_keeps_runtime_model_name_and_gui_binding(tmp_pat
     assert world_root.find('.//plugin[@filename="JointPositionController"]/model_name').text == runtime_model_name
     assert manifest['deployment']['position_m']['x'] == 0.06
     assert manifest['deployment']['orientation_rad']['pitch'] == 0.16
+    assert (output_dir / manifest['drones'][0]['ros_alate_config_relative_path']).exists()
+    assert (output_dir / manifest['drones'][0]['ros_nemala_config_relative_path']).exists()
 
 
 def test_calibration_generation_rejects_out_of_range_pose(tmp_path: Path) -> None:
