@@ -355,10 +355,10 @@ index b2c830e..5cbfc5b 100644
      use_sim_time: false
 -
 diff --git a/src/adapter.cpp b/src/adapter.cpp
-index d67292d..bb67ca7 100644
+index d67292d..eb5d452 100644
 --- a/src/adapter.cpp
 +++ b/src/adapter.cpp
-@@ -15,151 +15,204 @@ limitations under the License.
+@@ -15,151 +15,257 @@ limitations under the License.
  */
  
  #include "ros_alate/adapter.h"
@@ -367,20 +367,20 @@ index d67292d..bb67ca7 100644
 +#include "ros_alate/handlers/high_level_control_telemetry_handler.h"
 +#include "ros_alate/handlers/mission_control_state_handler.h"
 +#include "ros_alate/handlers/platform_error_handler.h"
++#include <chrono>
++#include <cstdlib>
  
  namespace ros_alate {
  
 -Adapter::Adapter(std::string strNodeName) : Node(strNodeName), 	m_bInterrupted(false), m_pThreadDispatcher(NULL)
-+Adapter::Adapter(std::string strNodeName) :
-+  Node(strNodeName),
-+  m_bInterrupted(false),
-+  m_pPublisherOpCom(NULL),
-+  m_pPublisherVelocity(NULL),
-+  m_pHandlerMcState(NULL),
-+  m_pHandlerHlcState(NULL),
-+  m_pHandlerHlcTelemetry(NULL),
-+  m_pHandlerHlcPlatformError(NULL),
-+  m_pThreadDispatcher(NULL)
++namespace {
++bool StackProfileEnabled()
++{
++  const char * value = std::getenv("STACK_PROFILE");
++  return (value != nullptr) && (std::string(value) == "1");
++}
++
++double WallTimeEpochSec()
  {
 -	/***	ROS Params	***/
 -
@@ -444,6 +444,33 @@ index d67292d..bb67ca7 100644
 -	// TODO: find an elegant way to share this adapter's dispatcher and promise between threads - this is not the way to do it.
 -	// This works but if the node is interrupted and the dispatcher thread lives beyond the point where the adapter gets destructed, bad things happen.
 -	m_pThreadDispatcher = new boost::thread(boost::ref(*this));
++  using clock = std::chrono::system_clock;
++  return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++
++void EmitProfile(const std::string & component, const std::string & event_type, const std::string & payload_json)
++{
++  if (!StackProfileEnabled()) {
++    return;
++  }
++  std::cout << "PROFILE:{\"component\":\"" << component
++            << "\",\"event_type\":\"" << event_type
++            << "\",\"wall_time_epoch_sec\":" << WallTimeEpochSec() << ","
++            << payload_json << "}" << std::endl;
++}
++}  // namespace
++
++Adapter::Adapter(std::string strNodeName) :
++  Node(strNodeName),
++  m_bInterrupted(false),
++  m_pPublisherOpCom(NULL),
++  m_pPublisherVelocity(NULL),
++  m_pHandlerMcState(NULL),
++  m_pHandlerHlcState(NULL),
++  m_pHandlerHlcTelemetry(NULL),
++  m_pHandlerHlcPlatformError(NULL),
++  m_pThreadDispatcher(NULL)
++{
 +  auto param_descriptor = rcl_interfaces::msg::ParameterDescriptor{};
 +
 +  param_descriptor.description = "The NeMALA node ID, how the dispatcher calls itself.";
@@ -631,8 +658,24 @@ index d67292d..bb67ca7 100644
 +    msg.angular.y,
 +    msg.angular.z
 +  );
++  EmitProfile(
++    "ros_alate",
++    "velocity_received",
++    "\"linear_x\":" + std::to_string(msg.linear.x) +
++    ",\"linear_y\":" + std::to_string(msg.linear.y) +
++    ",\"linear_z\":" + std::to_string(msg.linear.z) +
++    ",\"angular_z\":" + std::to_string(msg.angular.z)
++  );
 +  ros_alate_interfaces::Vector6Message vel_com_msg(msg.linear.x, msg.linear.y, msg.linear.z, msg.angular.z, msg.angular.y, msg.angular.x);
 +  m_pPublisherVelocity->Publish(vel_com_msg);
++  EmitProfile(
++    "ros_alate",
++    "velocity_published_to_nemala",
++    "\"linear_x\":" + std::to_string(msg.linear.x) +
++    ",\"linear_y\":" + std::to_string(msg.linear.y) +
++    ",\"linear_z\":" + std::to_string(msg.linear.z) +
++    ",\"angular_z\":" + std::to_string(msg.angular.z)
++  );
  }
  
  void Adapter::callback_OpCom(const ros_alate_interfaces::msg::OpCom &msg) const
@@ -662,6 +705,11 @@ index d67292d..bb67ca7 100644
 -	ros_alate_interfaces::OpComMessage msgCom(eCom);
 -	m_pPublisherOpCom->Publish(msgCom);
 +  RCLCPP_DEBUG(this->get_logger(), "Publishing operator command enum=%d", msg.op_com_enum);
++  EmitProfile(
++    "ros_alate",
++    "operator_command_received",
++    "\"op_com_enum\":" + std::to_string(msg.op_com_enum)
++  );
 +  ros_alate_interfaces::OpComMessage::OpCommandEnum eCom(ros_alate_interfaces::OpComMessage::OpCommandNone);
 +  switch(msg.op_com_enum)
 +  {
@@ -685,15 +733,20 @@ index d67292d..bb67ca7 100644
 +  }
 +  ros_alate_interfaces::OpComMessage msgCom(eCom);
 +  m_pPublisherOpCom->Publish(msgCom);
++  EmitProfile(
++    "ros_alate",
++    "operator_command_published_to_nemala",
++    "\"op_com_enum\":" + std::to_string(msg.op_com_enum)
++  );
  }
  
  } // namespace ros_alate
 diff --git a/src/handlers/high_level_control_state_handler.cpp b/src/handlers/high_level_control_state_handler.cpp
 new file mode 100644
-index 0000000..6911348
+index 0000000..e80db01
 --- /dev/null
 +++ b/src/handlers/high_level_control_state_handler.cpp
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,41 @@
 +/*
 +Copyright 2023 David Dovrat
 +
@@ -706,8 +759,19 @@ index 0000000..6911348
 +
 +#include "ros_alate/handlers/high_level_control_state_handler.h"
 +#include "ros_alate_interfaces/HlcStateMessage.hpp"
++#include <chrono>
++#include <cstdlib>
++#include <iostream>
 +
 +namespace ros_alate {
++
++namespace {
++double WallTimeEpochSec()
++{
++  using clock = std::chrono::system_clock;
++  return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}  // namespace
 +
 +void HighLevelControlStateHandler::Handle(NeMALA::Proptree pt)
 +{
@@ -715,15 +779,21 @@ index 0000000..6911348
 +  ros_alate_interfaces::msg::HlcState ros_msg;
 +  ros_msg.hlc_state_enum = static_cast<decltype(ros_msg.hlc_state_enum)>(msg.GetValue());
 +  m_pPublisher->publish(ros_msg);
++  const char * value = std::getenv("STACK_PROFILE");
++  if ((value != nullptr) && (std::string(value) == "1")) {
++    std::cout << "PROFILE:{\"component\":\"ros_alate\",\"event_type\":\"hlc_state_republished\",\"wall_time_epoch_sec\":"
++              << WallTimeEpochSec() << ",\"hlc_state_enum\":"
++              << static_cast<int>(ros_msg.hlc_state_enum) << "}" << std::endl;
++  }
 +}
 +
 +} // namespace ros_alate
 diff --git a/src/handlers/high_level_control_telemetry_handler.cpp b/src/handlers/high_level_control_telemetry_handler.cpp
 new file mode 100644
-index 0000000..01cc6bd
+index 0000000..68cb2b8
 --- /dev/null
 +++ b/src/handlers/high_level_control_telemetry_handler.cpp
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,52 @@
 +/*
 +Copyright 2023 David Dovrat
 +
@@ -736,8 +806,19 @@ index 0000000..01cc6bd
 +
 +#include "ros_alate/handlers/high_level_control_telemetry_handler.h"
 +#include "ros_alate_interfaces/LlcStatusMessage.hpp"
++#include <chrono>
++#include <cstdlib>
++#include <iostream>
 +
 +namespace ros_alate {
++
++namespace {
++double WallTimeEpochSec()
++{
++  using clock = std::chrono::system_clock;
++  return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}  // namespace
 +
 +void HighLevelControlTelemetryHandler::Handle(NeMALA::Proptree pt)
 +{
@@ -755,15 +836,22 @@ index 0000000..01cc6bd
 +  ros_msg.mode = llc.strMode;
 +  ros_msg.state = llc.strState;
 +  m_pPublisher->publish(ros_msg);
++  const char * value = std::getenv("STACK_PROFILE");
++  if ((value != nullptr) && (std::string(value) == "1")) {
++    std::cout << "PROFILE:{\"component\":\"ros_alate\",\"event_type\":\"telemetry_republished\",\"wall_time_epoch_sec\":"
++              << WallTimeEpochSec() << ",\"altitude\":"
++              << ros_msg.altitude << ",\"armed\":" << (ros_msg.armed ? "true" : "false")
++              << ",\"mode\":\"" << ros_msg.mode << "\",\"state\":\"" << ros_msg.state << "\"}" << std::endl;
++  }
 +}
 +
 +} // namespace ros_alate
 diff --git a/src/handlers/mission_control_state_handler.cpp b/src/handlers/mission_control_state_handler.cpp
 new file mode 100644
-index 0000000..90a4b8f
+index 0000000..dec18df
 --- /dev/null
 +++ b/src/handlers/mission_control_state_handler.cpp
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,41 @@
 +/*
 +Copyright 2023 David Dovrat
 +
@@ -776,8 +864,19 @@ index 0000000..90a4b8f
 +
 +#include "ros_alate/handlers/mission_control_state_handler.h"
 +#include "ros_alate_interfaces/McStateMessage.hpp"
++#include <chrono>
++#include <cstdlib>
++#include <iostream>
 +
 +namespace ros_alate {
++
++namespace {
++double WallTimeEpochSec()
++{
++  using clock = std::chrono::system_clock;
++  return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}  // namespace
 +
 +void MissionControlStateHandler::Handle(NeMALA::Proptree pt)
 +{
@@ -785,15 +884,21 @@ index 0000000..90a4b8f
 +  ros_alate_interfaces::msg::McState ros_msg;
 +  ros_msg.mc_state_enum = static_cast<decltype(ros_msg.mc_state_enum)>(msg.GetValue());
 +  m_pPublisher->publish(ros_msg);
++  const char * value = std::getenv("STACK_PROFILE");
++  if ((value != nullptr) && (std::string(value) == "1")) {
++    std::cout << "PROFILE:{\"component\":\"ros_alate\",\"event_type\":\"mc_state_republished\",\"wall_time_epoch_sec\":"
++              << WallTimeEpochSec() << ",\"mc_state_enum\":"
++              << static_cast<int>(ros_msg.mc_state_enum) << "}" << std::endl;
++  }
 +}
 +
 +} // namespace ros_alate
 diff --git a/src/handlers/platform_error_handler.cpp b/src/handlers/platform_error_handler.cpp
 new file mode 100644
-index 0000000..bd33392
+index 0000000..9de96bd
 --- /dev/null
 +++ b/src/handlers/platform_error_handler.cpp
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,71 @@
 +/*
 +Copyright 2023 David Dovrat
 +
@@ -806,8 +911,49 @@ index 0000000..bd33392
 +
 +#include "ros_alate/handlers/platform_error_handler.h"
 +#include "ros_alate_interfaces/StringMessage.hpp"
++#include <chrono>
++#include <cstdlib>
++#include <iostream>
++#include <string>
 +
 +namespace ros_alate {
++
++namespace {
++double WallTimeEpochSec()
++{
++  using clock = std::chrono::system_clock;
++  return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++
++std::string EscapeJson(const std::string & text)
++{
++  std::string escaped;
++  escaped.reserve(text.size() + 8);
++  for (char ch : text) {
++    switch (ch) {
++      case '\\':
++        escaped += "\\\\";
++        break;
++      case '"':
++        escaped += "\\\"";
++        break;
++      case '\n':
++        escaped += "\\n";
++        break;
++      case '\r':
++        escaped += "\\r";
++        break;
++      case '\t':
++        escaped += "\\t";
++        break;
++      default:
++        escaped += ch;
++        break;
++    }
++  }
++  return escaped;
++}
++}  // namespace
 +
 +void PlatformErrorHandler::Handle(NeMALA::Proptree pt)
 +{
@@ -815,6 +961,56 @@ index 0000000..bd33392
 +  ros_alate_interfaces::msg::HlcPlatformError ros_msg;
 +  ros_msg.error_text = msg.GetContent();
 +  m_pPublisher->publish(ros_msg);
++  const char * value = std::getenv("STACK_PROFILE");
++  if ((value != nullptr) && (std::string(value) == "1")) {
++    std::cout << "PROFILE:{\"component\":\"ros_alate\",\"event_type\":\"platform_error_republished\",\"wall_time_epoch_sec\":"
++              << WallTimeEpochSec() << ",\"error_text\":\""
++              << EscapeJson(ros_msg.error_text) << "\"}" << std::endl;
++  }
 +}
 +
 +} // namespace ros_alate
+diff --git a/src/ros_alate_adapter.cpp b/src/ros_alate_adapter.cpp
+index 8be368a..14817da 100644
+--- a/src/ros_alate_adapter.cpp
++++ b/src/ros_alate_adapter.cpp
+@@ -16,18 +16,37 @@ limitations under the License.
+ 
+ #include "ros_alate/adapter.h"
+ 
++#include <chrono>
++#include <thread>
++
+ int main(int argc, char * argv[])
+ {
+ 	rclcpp::init(argc, argv);
+ 
+ 	std::shared_ptr<ros_alate::Adapter> pAdapter = std::make_shared<ros_alate::Adapter>();
++	rclcpp::executors::SingleThreadedExecutor executor;
++	executor.add_node(pAdapter);
++	std::thread spin_thread([&executor]() { executor.spin(); });
+ 
+ 	RCLCPP_INFO(pAdapter->get_logger(), "Started Spinning");
+ 	std::shared_future<void> futureDoneDispatching(pAdapter->GetFutureDoneDispatching());
+ 	rclcpp::FutureReturnCode eReturnCode(rclcpp::FutureReturnCode::TIMEOUT);
+-	while(rclcpp::FutureReturnCode::TIMEOUT == eReturnCode)
++	while (rclcpp::ok())
++	{
++		if (std::future_status::ready == futureDoneDispatching.wait_for(std::chrono::milliseconds(100)))
++		{
++			eReturnCode = rclcpp::FutureReturnCode::SUCCESS;
++			break;
++		}
++	}
++	if (!rclcpp::ok() && rclcpp::FutureReturnCode::SUCCESS != eReturnCode)
++	{
++		eReturnCode = rclcpp::FutureReturnCode::INTERRUPTED;
++	}
++	executor.cancel();
++	if (spin_thread.joinable())
+ 	{
+-		eReturnCode = rclcpp::spin_until_future_complete(pAdapter, futureDoneDispatching,  std::chrono::milliseconds(100));
++		spin_thread.join();
+ 	}
+ 	if (rclcpp::FutureReturnCode::INTERRUPTED == eReturnCode)
+ 	{

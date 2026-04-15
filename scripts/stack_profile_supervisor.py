@@ -64,9 +64,13 @@ class ProfileSupervisor:
         self._running = True
         self._sample_period_sec = float(self._manifest.get('sample_period_sec', 1.0))
         self._root_dir = Path(self._manifest.get('root_dir', '.')).resolve()
+        self._run_dir = Path(self._manifest.get('run_dir', self._root_dir)).resolve()
         self._state_path = self._output_dir / 'profile.state.json'
         self._core_containers = list(self._manifest.get('core_containers', []))
-        self._mavlink_processes: list[subprocess.Popen[str]] = []
+        self._stack_name = str(self._manifest.get('stack_name', 'stack'))
+        self._network = str(self._manifest.get('network', ''))
+        self._image = str(self._manifest.get('image', ''))
+        self._mavlink_processes: list[dict[str, Any]] = []
         self._mavlink_state: list[dict[str, Any]] = []
         self._snapshotted_containers: set[str] = set()
         self._started_wall_time_epoch_sec = time.time()
@@ -255,6 +259,8 @@ class ProfileSupervisor:
         self._gpu_process_handle.flush()
 
     def _start_mavlink_recorders(self) -> None:
+        if not self._image:
+            return
         for drone in self._manifest.get('drones', []):
             endpoint = str(drone.get('mavlink_profile_endpoint') or drone.get('mavlink_endpoint') or '').strip()
             if not endpoint:
@@ -262,37 +268,61 @@ class ProfileSupervisor:
             drone_id = str(drone['id'])
             output_dir = self._output_dir / 'mavlink' / drone_id
             output_dir.mkdir(parents=True, exist_ok=True)
+            root_mount = '/workspace/root'
+            run_mount = '/workspace/run'
+            container_name = f'{self._stack_name}-profile-mavlink-{drone_id}'
             cmd = [
-                sys.executable,
-                str(self._root_dir / 'scripts' / 'profile_mavlink_recorder.py'),
-                '--endpoint', endpoint,
-                '--output-dir', str(output_dir),
+                'docker',
+                'run',
+                '-d',
+                '--name',
+                container_name,
+                '--network',
+                self._network,
+                '-e',
+                'PYTHONUNBUFFERED=1',
+                '--entrypoint',
+                'python3',
+                '-v',
+                f'{self._root_dir}:{root_mount}:ro',
+                '-v',
+                f'{self._run_dir}:{run_mount}:rw',
+                self._image,
+                f'{root_mount}/scripts/profile_mavlink_recorder.py',
+                '--endpoint',
+                endpoint,
+                '--output-dir',
+                f'{run_mount}/diagnostics/profile/mavlink/{drone_id}',
             ]
-            proc = subprocess.Popen(cmd)
-            self._mavlink_processes.append(proc)
+            result = self._run(cmd)
+            if result.returncode != 0:
+                continue
+            self._core_containers.append(container_name)
             self._mavlink_state.append(
                 {
                     'drone_id': drone_id,
                     'endpoint': endpoint,
                     'output_dir': str(output_dir),
-                    'pid': proc.pid,
+                    'container_name': container_name,
+                    'container_id': result.stdout.strip(),
+                }
+            )
+            self._mavlink_processes.append(
+                {
+                    'container_name': container_name,
+                    'output_dir': output_dir,
                 }
             )
         self._write_state()
 
     def _stop_mavlink_recorders(self) -> None:
         for proc in self._mavlink_processes:
-            if proc.poll() is None:
-                proc.terminate()
-        deadline = time.time() + 10.0
-        for proc in self._mavlink_processes:
-            if proc.poll() is not None:
-                continue
-            remaining = max(deadline - time.time(), 0.1)
-            try:
-                proc.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            container_name = proc['container_name']
+            output_dir = proc['output_dir']
+            logs_result = self._run(['docker', 'logs', container_name])
+            if logs_result.returncode == 0:
+                (output_dir / 'recorder.log').write_text(logs_result.stdout + logs_result.stderr)
+            self._run(['docker', 'rm', '-f', container_name])
         self._mavlink_processes.clear()
 
     def stop(self) -> None:

@@ -1,12 +1,683 @@
+diff --git a/codestack/README.md b/codestack/README.md
+new file mode 100644
+index 0000000..f547bf7
+--- /dev/null
++++ b/codestack/README.md
+@@ -0,0 +1,121 @@
++# Alate Startup Codestack
++
++This codestack turns the local `alate` repo into a runnable startup environment for early decision-making work.
++It keeps the legacy NeMALA IPC path alive, adds the public ROS2 adapters from `MARS-Technion`, and runs ArduCopter SITL in a stable detached-container mode so you can drive `mc` and `hlc` from ROS2.
++
++## What the stack runs
++
++- `proxy` and `logger` from `nemala/tools:latest`
++- `sitl` from `davidovrat/arducopter-sitl:latest`, launched directly as ArduCopter
++- local builds of `mc`, `hlc`, `osc`, and `bma` from this repo
++- `ros_alate`, `ros_alate_interfaces`, `ros_nemala`, and `ros_nemala_interfaces`
++- an optional `decision-dev` ROS2 shell for new algorithms
++
++## Why it looks like this
++
++The current `alate` codebase does not contain native ROS code.
++The ROS2 connection layer lives in the public `MARS-Technion` repos, but those packages still rely on:
++
++- `libNeMALA`
++- the NeMALA proxy
++- IPC endpoints shared across containers
++
++That means a working startup stack has to run both ROS2 and the classic NeMALA transport at the same time.
++
++## Important limitation in the current ROS adapter
++
++The upstream `ros_alate` code currently implements command ingress only.
++
++What is implemented:
++
++- `/alate_input_operator_command`
++- `/alate_input_velocity`
++
++What is *not* implemented in code yet, even though the upstream README mentions it:
++
++- mission control state egress
++- high-level control state egress
++- LLC telemetry egress
++- HLC error egress
++
++The message packages confirm the same gap:
++
++- `ros_alate_interfaces` defines `OpCom` and `McState`
++- there are no ROS interfaces yet for HLC state, LLC telemetry, or HLC errors
++
++So this startup codestack is good for getting ROS2 decision nodes to command Alate.
++If you want closed-loop ROS2 autonomy later, the next step is extending the adapter to publish Alate telemetry back into ROS2.
++
++## Quick Start On This Host
++
++This machine currently has `docker`, but not the `docker compose` plugin.
++To keep the codestack runnable as-is, use the helper scripts:
++
++1. Start the stack:
++
++   ```bash
++   cd /home/guy-sassy/projects/Nemala/alate/codestack
++   ./scripts/up.sh
++   ```
++
++1. Open a ROS2 development shell:
++
++   ```bash
++   ./scripts/dev.sh
++   ```
++
++1. Inside the shell, send a takeoff-style operator command:
++
++   ```bash
++   ros2 topic pub /alate_input_operator_command ros_alate_interfaces/msg/OpCom "{op_com_enum: 1}" --once
++   ```
++
++1. Send a velocity command:
++
++   ```bash
++   ros2 topic pub /alate_input_velocity geometry_msgs/msg/Twist "{linear: {x: 1.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
++   ```
++
++1. Stop everything:
++
++   ```bash
++   ./scripts/down.sh
++   ```
++
++## Quick Start With Compose
++
++If your environment has the `docker compose` plugin, you can use the compose file directly:
++
++```bash
++cd /home/guy-sassy/projects/Nemala/alate/codestack
++docker compose up --build
++docker compose --profile dev up -d decision-dev
++docker compose exec decision-dev bash
++docker compose down -v
++```
++
++## Optional Profiles
++
++- `dev`: starts the long-lived `decision-dev` container
++- `ops`: starts `osc`; edit `config/alate.sitl.json` first so `operator_station.server` points at a real operator-station server
++
++## Layout
++
++- `compose.yaml`: the startup stack
++- `docker/alate-ros-stack.Dockerfile`: one pinned image that builds local Alate and the public ROS adapters
++- `config/alate.sitl.json`: single-agent SITL configuration for `mc` and `hlc`
++- `config/adapter.yaml`: ROS2 to Alate topic bridge parameters
++- `config/node_manager.yaml`: ROS2 wrapper around the NeMALA node manager
++- `decision_ws/`: place for future decision-making packages
++- `scripts/up.sh`: plain-`docker` launcher for this host
++- `scripts/dev.sh`: interactive ROS2 shell for new decision packages
++- `scripts/down.sh`: cleanup helper
++
++## Pinned External Refs
++
++The Docker build pins the current `MARS-Technion` adapter repos to these commits:
++
++- `ros_alate`: `652db08738a29a5b126dee8b63bec1e63c1b7030`
++- `ros_alate_interfaces`: `76f8c7b822a49ccd294f5aff2855ef929f2ce119`
++- `ros_nemala`: `628c28c926c6c8abc24e0e88d82bd2591f5b9d15`
++- `ros_nemala_interfaces`: `acf9a2fb886242612dfe4b4bde44803b4e0cc5e8`
+diff --git a/codestack/compose.yaml b/codestack/compose.yaml
+new file mode 100644
+index 0000000..a272586
+--- /dev/null
++++ b/codestack/compose.yaml
+@@ -0,0 +1,143 @@
++name: alate-startup
++
++x-alate-ros-image: &alate-ros-image
++  build:
++    context: ..
++    dockerfile: codestack/docker/alate-ros-stack.Dockerfile
++  image: alate-ros-stack:local
++
++x-alate-service: &alate-service
++  <<: *alate-ros-image
++  restart: unless-stopped
++  volumes:
++    - ipc:/tmp/nemala
++    - ./config:/stack/config:ro
++
++services:
++  sitl:
++    image: davidovrat/arducopter-sitl:latest
++    restart: unless-stopped
++    entrypoint:
++      - /ardupilot/build/sitl/bin/arducopter
++    command:
++      - -S
++      - -I0
++      - --model
++      - +
++      - --defaults
++      - /ardupilot/Tools/autotest/default_params/copter.parm
++    networks:
++      - mav
++
++  proxy:
++    image: nemala/tools:latest
++    restart: unless-stopped
++    volumes:
++      - ipc:/tmp/nemala
++      - ./config:/stack/config:ro
++    command:
++      - proxy
++      - uav
++      - /stack/config/alate.sitl.json
++
++  logger:
++    image: nemala/tools:latest
++    restart: unless-stopped
++    depends_on:
++      - proxy
++    volumes:
++      - ipc:/tmp/nemala
++      - ./logs:/stack/logs
++    command:
++      - log
++      - ipc:///tmp/nemala/alate_log
++
++  mc:
++    <<: *alate-service
++    depends_on:
++      - proxy
++    working_dir: /opt/alate
++    command:
++      - ./mc
++      - uav
++      - /stack/config/alate.sitl.json
++
++  hlc:
++    <<: *alate-service
++    depends_on:
++      - proxy
++      - sitl
++    working_dir: /opt/alate
++    command:
++      - ./hlc
++      - uav
++      - /stack/config/alate.sitl.json
++    networks:
++      - default
++      - mav
++
++  ros-alate:
++    <<: *alate-service
++    depends_on:
++      - proxy
++      - mc
++      - hlc
++    environment:
++      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
++    command:
++      - bash
++      - -lc
++      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_alate adapter --ros-args --params-file /stack/config/adapter.yaml
++
++  ros-nemala:
++    <<: *alate-service
++    depends_on:
++      - proxy
++    environment:
++      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
++    command:
++      - bash
++      - -lc
++      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_nemala node_manager --ros-args --params-file /stack/config/node_manager.yaml
++
++  decision-dev:
++    <<: *alate-service
++    profiles:
++      - dev
++    depends_on:
++      - ros-alate
++      - ros-nemala
++    environment:
++      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
++    working_dir: /workspace/decision_ws
++    stdin_open: true
++    tty: true
++    volumes:
++      - ipc:/tmp/nemala
++      - ./config:/stack/config:ro
++      - ./decision_ws:/workspace/decision_ws
++      - ..:/workspace/alate:rw
++    command:
++      - bash
++      - -lc
++      - source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && sleep infinity
++
++  osc:
++    <<: *alate-service
++    profiles:
++      - ops
++    depends_on:
++      - proxy
++      - mc
++      - hlc
++    working_dir: /opt/alate
++    command:
++      - ./osc
++      - uav
++      - /stack/config/alate.sitl.json
++
++volumes:
++  ipc:
++
++networks:
++  mav:
+diff --git a/codestack/config/adapter.yaml b/codestack/config/adapter.yaml
+new file mode 100644
+index 0000000..75b60f0
+--- /dev/null
++++ b/codestack/config/adapter.yaml
+@@ -0,0 +1,8 @@
++/ros_alate_adapter:
++  ros__parameters:
++    alate_operator_command_topic: 101
++    alate_velocity_topic: 104
++    nemala_node_id: 402
++    proxy_endpoint_for_publishing: ipc:///tmp/nemala/alate_publishers
++    proxy_endpoint_for_subscribing: ipc:///tmp/nemala/alate_subscribers
++    use_sim_time: false
+diff --git a/codestack/config/alate.sitl.json b/codestack/config/alate.sitl.json
+new file mode 100644
+index 0000000..52752be
+--- /dev/null
++++ b/codestack/config/alate.sitl.json
+@@ -0,0 +1,48 @@
++{
++  "nodes": {
++    "operator_station_client": 1,
++    "mission_control": 2,
++    "high_level_control": 3,
++    "behavior1": 101,
++    "sensor1": 201,
++    "payload1": 301
++  },
++  "proxies": {
++    "uav": {
++      "subscribers": "ipc:///tmp/nemala/alate_subscribers",
++      "publishers": "ipc:///tmp/nemala/alate_publishers",
++      "logger": "ipc:///tmp/nemala/alate_log"
++    }
++  },
++  "topics": {
++    "operator_command": 101,
++    "mcm_state": 102,
++    "hlc_state": 103,
++    "velocity_command": 104,
++    "hlc_telemetry": 105,
++    "hlc_error": 106,
++    "direction_command": 107,
++    "operator_payload": 108,
++    "peers": 201,
++    "feedback": 202
++  },
++  "autopilot": {
++    "type": "dronekit",
++    "full_path_to_python": "/usr/bin/python3",
++    "master": "tcp:sitl:5760",
++    "baud": "921600",
++    "altitude": 10,
++    "low_bat_voltage": "11.1"
++  },
++  "behaviors": {},
++  "operator_station": {
++    "client_id": -1,
++    "server": "operator-station",
++    "port": "8000",
++    "allowed_timeouts": 1
++  },
++  "deploy": {
++    "sleep_for_sec": 0,
++    "working_directory": "/opt/alate"
++  }
++}
+diff --git a/codestack/config/node_manager.yaml b/codestack/config/node_manager.yaml
+new file mode 100644
+index 0000000..5cf403e
+--- /dev/null
++++ b/codestack/config/node_manager.yaml
+@@ -0,0 +1,4 @@
++/nemala_node_manager:
++  ros__parameters:
++    proxy_endpoint_publishers: ipc:///tmp/nemala/alate_publishers
++    use_sim_time: false
+diff --git a/codestack/decision_ws/README.md b/codestack/decision_ws/README.md
+new file mode 100644
+index 0000000..ca55c0d
+--- /dev/null
++++ b/codestack/decision_ws/README.md
+@@ -0,0 +1,18 @@
++# Decision Workspace
++
++Put your ROS2 decision-making packages under `src/`.
++
++Inside the `decision-dev` container, source the stack overlay first:
++
++```bash
++source /opt/ros/humble/setup.bash
++source /opt/ros2_ws/install/setup.bash
++```
++
++Then build your own workspace with:
++
++```bash
++cd /workspace/decision_ws
++colcon build --merge-install
++source install/setup.bash
++```
+diff --git a/codestack/docker/alate-ros-stack.Dockerfile b/codestack/docker/alate-ros-stack.Dockerfile
+new file mode 100644
+index 0000000..c35bcce
+--- /dev/null
++++ b/codestack/docker/alate-ros-stack.Dockerfile
+@@ -0,0 +1,94 @@
++FROM ros:humble AS builder
++
++ENV DEBIAN_FRONTEND=noninteractive
++
++SHELL ["/bin/bash", "-lc"]
++
++ARG ROS_ALATE_REF=652db08738a29a5b126dee8b63bec1e63c1b7030
++ARG ROS_ALATE_INTERFACES_REF=76f8c7b822a49ccd294f5aff2855ef929f2ce119
++ARG ROS_NEMALA_REF=628c28c926c6c8abc24e0e88d82bd2591f5b9d15
++ARG ROS_NEMALA_INTERFACES_REF=acf9a2fb886242612dfe4b4bde44803b4e0cc5e8
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    build-essential \
++    cmake \
++    ffmpeg \
++    git \
++    libboost-all-dev \
++    libzmq3-dev \
++    python3-colcon-common-extensions \
++    python3-pip \
++    ros-humble-ament-cmake \
++    ros-humble-geometry-msgs \
++    ros-humble-rosidl-default-generators \
++    wget \
++    && rm -rf /var/lib/apt/lists/*
++
++RUN python3 -m pip install --no-cache-dir --upgrade pip && \
++    python3 -m pip install --no-cache-dir pyzmq lxml
++
++WORKDIR /tmp
++
++RUN wget -q https://gitlab.com/nemala/core/-/archive/version_0_1/core-version_0_1.tar.gz && \
++    tar -xf core-version_0_1.tar.gz && \
++    cmake -S /tmp/core-version_0_1/src -B /tmp/core-build && \
++    cmake --build /tmp/core-build --parallel && \
++    cmake --install /tmp/core-build
++
++WORKDIR /opt/src/alate
++
++COPY . /opt/src/alate
++
++RUN python3 -m pip install --no-cache-dir -r /opt/src/alate/src/HighLevelControl/AutoPilots/requirements.txt && \
++    cmake -S /opt/src/alate/src -B /tmp/alate-build \
++      -DNeMALA_INCLUDE_DIR=/usr/local/include \
++      -DNeMALA_LIBRARY_PATH=/usr/local/lib \
++      -DCMAKE_INSTALL_PREFIX=/opt/alate \
++      -DALATE_BUILD_MC=ON \
++      -DALATE_BUILD_HLC=ON \
++      -DALATE_BUILD_OSC=ON \
++      -DALATE_BUILD_BMA=ON && \
++    cmake --build /tmp/alate-build --parallel && \
++    cmake --install /tmp/alate-build
++
++WORKDIR /opt/ros2_ws/src
++
++RUN git clone --depth 1 https://github.com/MARS-Technion/ros_alate_interfaces.git && \
++    git -C ros_alate_interfaces checkout "${ROS_ALATE_INTERFACES_REF}" && \
++    git clone --depth 1 https://github.com/MARS-Technion/ros_nemala_interfaces.git && \
++    git -C ros_nemala_interfaces checkout "${ROS_NEMALA_INTERFACES_REF}" && \
++    git clone --depth 1 https://github.com/MARS-Technion/ros_alate.git && \
++    git -C ros_alate checkout "${ROS_ALATE_REF}" && \
++    git clone --depth 1 https://github.com/MARS-Technion/ros_nemala.git && \
++    git -C ros_nemala checkout "${ROS_NEMALA_REF}"
++
++WORKDIR /opt/ros2_ws
++
++RUN source /opt/ros/humble/setup.bash && \
++    colcon build --merge-install
++
++FROM ros:humble
++
++ENV DEBIAN_FRONTEND=noninteractive
++ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
++
++SHELL ["/bin/bash", "-lc"]
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    ffmpeg \
++    libboost-all-dev \
++    libzmq5 \
++    python3-pip \
++    ros-humble-geometry-msgs \
++    ros-humble-rosidl-default-runtime \
++    && rm -rf /var/lib/apt/lists/*
++
++COPY --from=builder /usr/local /usr/local
++COPY --from=builder /opt/alate /opt/alate
++COPY --from=builder /opt/ros2_ws/install /opt/ros2_ws/install
++
++RUN ldconfig
++
++WORKDIR /opt/alate
++
++CMD ["bash"]
+diff --git a/codestack/scripts/dev.sh b/codestack/scripts/dev.sh
+new file mode 100755
+index 0000000..5cb132d
+--- /dev/null
++++ b/codestack/scripts/dev.sh
+@@ -0,0 +1,34 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++REPO_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
++
++STACK_NAME="alate-startup"
++IMAGE="alate-ros-stack:local"
++NETWORK="${STACK_NAME}-net"
++VOLUME="${STACK_NAME}-ipc"
++ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
++
++if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
++  echo "Image ${IMAGE} was not found. Run ${ROOT_DIR}/scripts/up.sh first."
++  exit 1
++fi
++
++if ! docker network inspect "${NETWORK}" >/dev/null 2>&1; then
++  echo "Network ${NETWORK} was not found. Run ${ROOT_DIR}/scripts/up.sh first."
++  exit 1
++fi
++
++exec docker run --rm -it \
++  --name "${STACK_NAME}-decision-dev" \
++  --network "${NETWORK}" \
++  -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${ROOT_DIR}/config:/stack/config:ro" \
++  -v "${ROOT_DIR}/decision_ws:/workspace/decision_ws" \
++  -v "${REPO_DIR}:/workspace/alate:rw" \
++  -w /workspace/decision_ws \
++  "${IMAGE}" \
++  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && exec bash"
+diff --git a/codestack/scripts/down.sh b/codestack/scripts/down.sh
+new file mode 100755
+index 0000000..edce852
+--- /dev/null
++++ b/codestack/scripts/down.sh
+@@ -0,0 +1,28 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++STACK_NAME="alate-startup"
++NETWORK="${STACK_NAME}-net"
++VOLUME="${STACK_NAME}-ipc"
++
++containers=(
++  "${STACK_NAME}-decision-dev"
++  "${STACK_NAME}-osc"
++  "${STACK_NAME}-ros-nemala"
++  "${STACK_NAME}-ros-alate"
++  "${STACK_NAME}-hlc"
++  "${STACK_NAME}-mc"
++  "${STACK_NAME}-logger"
++  "${STACK_NAME}-proxy"
++  "${STACK_NAME}-sitl"
++)
++
++for container in "${containers[@]}"; do
++  docker rm -f "${container}" >/dev/null 2>&1 || true
++done
++
++docker network rm "${NETWORK}" >/dev/null 2>&1 || true
++docker volume rm "${VOLUME}" >/dev/null 2>&1 || true
++
++printf 'Stopped %s\n' "${STACK_NAME}"
+diff --git a/codestack/scripts/up.sh b/codestack/scripts/up.sh
+new file mode 100755
+index 0000000..b3ec3ff
+--- /dev/null
++++ b/codestack/scripts/up.sh
+@@ -0,0 +1,111 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++REPO_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
++
++STACK_NAME="alate-startup"
++IMAGE="alate-ros-stack:local"
++NETWORK="${STACK_NAME}-net"
++VOLUME="${STACK_NAME}-ipc"
++ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
++
++CONFIG_DIR="${ROOT_DIR}/config"
++LOG_DIR="${ROOT_DIR}/logs"
++
++containers=(
++  "${STACK_NAME}-decision-dev"
++  "${STACK_NAME}-osc"
++  "${STACK_NAME}-ros-nemala"
++  "${STACK_NAME}-ros-alate"
++  "${STACK_NAME}-hlc"
++  "${STACK_NAME}-mc"
++  "${STACK_NAME}-logger"
++  "${STACK_NAME}-proxy"
++  "${STACK_NAME}-sitl"
++)
++
++mkdir -p "${LOG_DIR}"
++
++for container in "${containers[@]}"; do
++  docker rm -f "${container}" >/dev/null 2>&1 || true
++done
++
++docker volume inspect "${VOLUME}" >/dev/null 2>&1 || docker volume create "${VOLUME}" >/dev/null
++docker network inspect "${NETWORK}" >/dev/null 2>&1 || docker network create "${NETWORK}" >/dev/null
++
++docker build \
++  -t "${IMAGE}" \
++  -f "${ROOT_DIR}/docker/alate-ros-stack.Dockerfile" \
++  "${REPO_DIR}"
++
++docker run -d --rm \
++  --name "${STACK_NAME}-sitl" \
++  --network "${NETWORK}" \
++  --network-alias sitl \
++  --entrypoint /ardupilot/build/sitl/bin/arducopter \
++  davidovrat/arducopter-sitl:latest \
++  -S \
++  -I0 \
++  --model + \
++  --defaults /ardupilot/Tools/autotest/default_params/copter.parm
++
++docker run -d --rm \
++  --name "${STACK_NAME}-proxy" \
++  --network "${NETWORK}" \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${CONFIG_DIR}:/stack/config:ro" \
++  nemala/tools:latest \
++  proxy uav /stack/config/alate.sitl.json
++
++docker run -d --rm \
++  --name "${STACK_NAME}-logger" \
++  --network "${NETWORK}" \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${LOG_DIR}:/stack/logs" \
++  nemala/tools:latest \
++  log ipc:///tmp/nemala/alate_log
++
++sleep 2
++
++docker run -d --rm \
++  --name "${STACK_NAME}-mc" \
++  --network "${NETWORK}" \
++  -w /opt/alate \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${CONFIG_DIR}:/stack/config:ro" \
++  "${IMAGE}" \
++  ./mc uav /stack/config/alate.sitl.json
++
++docker run -d --rm \
++  --name "${STACK_NAME}-hlc" \
++  --network "${NETWORK}" \
++  -w /opt/alate \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${CONFIG_DIR}:/stack/config:ro" \
++  "${IMAGE}" \
++  ./hlc uav /stack/config/alate.sitl.json
++
++sleep 2
++
++docker run -d --rm \
++  --name "${STACK_NAME}-ros-alate" \
++  --network "${NETWORK}" \
++  -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${CONFIG_DIR}:/stack/config:ro" \
++  "${IMAGE}" \
++  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_alate adapter --ros-args --params-file /stack/config/adapter.yaml"
++
++docker run -d --rm \
++  --name "${STACK_NAME}-ros-nemala" \
++  --network "${NETWORK}" \
++  -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}" \
++  -v "${VOLUME}:/tmp/nemala" \
++  -v "${CONFIG_DIR}:/stack/config:ro" \
++  "${IMAGE}" \
++  bash -lc "source /opt/ros/humble/setup.bash && source /opt/ros2_ws/install/setup.bash && ros2 run ros_nemala node_manager --ros-args --params-file /stack/config/node_manager.yaml"
++
++printf 'Started %s on docker network %s\n' "${STACK_NAME}" "${NETWORK}"
++printf 'Open a dev shell with %s\n' "${ROOT_DIR}/scripts/dev.sh"
 diff --git a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
-index 52a5b91..6e6cf36 100644
+index 52a5b91..5225666 100644
 --- a/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
 +++ b/src/HighLevelControl/AutoPilots/Autopilot/AutopilotDronekit.py
-@@ -6,9 +6,15 @@
+@@ -6,9 +6,17 @@
  # The code in this file is provided "as is" and comes with no warranty whatsoever
  ###################################################################################
  
 +import collections
++import json
++import os
  import sys
  import threading
  import time
@@ -18,12 +689,20 @@ index 52a5b91..6e6cf36 100644
  from dronekit import connect, VehicleMode, mavutil
  
  if __name__ == "__main__":
-@@ -27,22 +33,36 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -27,29 +35,79 @@ class AutopilotDronekit(AbstractAutopilot):
          The AutopilotDronekit class is an abstraction of a dronekit autopilot
      """
  
 -    def __init__(self, target_address, baud_rate):
-+    def __init__(self, target_address, baud_rate, force_arm=False):
++    def __init__(
++        self,
++        target_address,
++        baud_rate,
++        force_arm=False,
++        heartbeat_timeout_sec=30,
++        connection_timeout_sec=60,
++        connect_retry_budget_sec=60,
++    ):
          """
          Establish connection to the autopilot
          """
@@ -31,10 +710,17 @@ index 52a5b91..6e6cf36 100644
          # A lock for guarding the vehicle since it handles its own connection
          self._lock = threading.Lock()
 +        self._force_arm = bool(force_arm)
++        self._heartbeat_timeout_sec = float(heartbeat_timeout_sec)
++        self._connection_timeout_sec = float(connection_timeout_sec)
++        self._connect_retry_budget_sec = float(connect_retry_budget_sec)
 +        self._info(
 +            f"AutopilotDronekit connecting to target_address={target_address} "
-+            f"baud_rate={baud_rate} force_arm={self._force_arm}"
++            f"baud_rate={baud_rate} force_arm={self._force_arm} "
++            f"heartbeat_timeout_sec={self._heartbeat_timeout_sec} "
++            f"connection_timeout_sec={self._connection_timeout_sec} "
++            f"connect_retry_budget_sec={self._connect_retry_budget_sec}"
 +        )
++        self._profile_enabled = os.getenv("STACK_PROFILE", "0") == "1"
          connected = False
          time_start = time.time()
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
@@ -48,17 +734,20 @@ index 52a5b91..6e6cf36 100644
 +                    target_address,
 +                    baud=baud_rate,
 +                    wait_ready=False,
-+                    heartbeat_timeout=30,
-+                    timeout=60,
++                    heartbeat_timeout=self._heartbeat_timeout_sec,
++                    timeout=self._connection_timeout_sec,
 +                )
                  connected = True
-             except:
+-            except:
 -                print(sys.exc_info()[0])
-+                self._warn(f"AutopilotDronekit connection retry after error={sys.exc_info()[0]}")
-                 if (time.time() - time_start) < 60:
+-                if (time.time() - time_start) < 60:
++            except Exception as exc:
++                self._warn(f"AutopilotDronekit connection retry after error={exc!r}")
++                if (time.time() - time_start) < self._connect_retry_budget_sec:
++                    time.sleep(1)
                      continue
                  else:
-@@ -50,6 +70,16 @@ class AutopilotDronekit(AbstractAutopilot):
+                     break
          self._lock.release()  # ---------------------------------- Release ------------------------------------
          if not connected:
              raise RuntimeError("AutopilotDronekit.py failed to establish Vehicle Communication.")
@@ -72,20 +761,32 @@ index 52a5b91..6e6cf36 100644
 +
 +    def _error(self, message):
 +        print(f"ERROR:{message}", file=sys.stderr, flush=True)
++
++    def _profile(self, event_type, **payload):
++        if not self._profile_enabled:
++            return
++        payload.update({
++            "component": "autopilot_dronekit",
++            "event_type": event_type,
++            "wall_time_epoch_sec": time.time(),
++        })
++        print(f"PROFILE:{json.dumps(payload, separators=(',', ':'))}", file=sys.stderr, flush=True)
  
      ###################################################################################
      # ----------------------- AbstractAutopilot Interface Methods --------------------#
-@@ -62,31 +92,48 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -62,31 +120,71 @@ class AutopilotDronekit(AbstractAutopilot):
          super(AutopilotDronekit, self).shutdown()
  
      def ready2takeoff(self):
 +        self._info("AutopilotDronekit ready2takeoff: setting mode GUIDED")
++        self._profile("ready_for_takeoff_sent")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("GUIDED")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def arm(self):
 +        self._info(f"AutopilotDronekit arm requested force_arm={self._force_arm}")
++        self._profile("arm_sent", force_arm=self._force_arm)
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
 -        self._Vehicle.armed = True
 +        if self._force_arm:
@@ -104,36 +805,58 @@ index 52a5b91..6e6cf36 100644
  
      def takeoff(self, dAltitude):
 +        self._info(f"AutopilotDronekit takeoff requested altitude={dAltitude}")
++        self._profile("takeoff_sent", altitude=dAltitude)
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.simple_takeoff(dAltitude)
          self._lock.release()  # ---------------------------------- Release ------------------------------------
++        for attempt in range(1, 6):
++            time.sleep(1.0)
++            self._lock.acquire()  # ------------------------------------ Lock ---------------------------------
++            armed = bool(getattr(self._Vehicle, "armed", False))
++            location = getattr(self._Vehicle, "location", None)
++            global_relative_frame = getattr(location, "global_relative_frame", None)
++            current_altitude = getattr(global_relative_frame, "alt", 0) or 0
++            mode = getattr(getattr(self._Vehicle, "mode", None), "name", "")
++            if current_altitude > 0.2 or not armed or mode == "LAND":
++                self._lock.release()  # ------------------------------ Release -------------------------------
++                break
++            self._warn(
++                f"AutopilotDronekit takeoff not yet climbing after {attempt}s "
++                f"(altitude={current_altitude}); reissuing simple_takeoff"
++            )
++            self._Vehicle.simple_takeoff(dAltitude)
++            self._lock.release()  # ---------------------------------- Release --------------------------------
  
      def land(self):
 +        self._info("AutopilotDronekit land requested")
++        self._profile("land_sent")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("LAND")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def rtl(self):
 +        self._info("AutopilotDronekit rtl requested")
++        self._profile("rtl_sent")
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
          self._Vehicle.mode = VehicleMode("RTL")
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_velocity_body_frame(self, forward, right, down):
 +        self._info(f"AutopilotDronekit velocity command forward={forward} right={right} down={down}")
++        self._profile("body_velocity_sent", forward=forward, right=right, down=down)
          # print(dForward)
          msg = self._Vehicle.message_factory.set_position_target_local_ned_encode(
              0,  # time_boot_ms (not used)
-@@ -102,6 +149,7 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -102,6 +200,8 @@ class AutopilotDronekit(AbstractAutopilot):
          self._lock.release()  # ---------------------------------- Release ------------------------------------
  
      def set_yaw_rate(self, deg_per_sec):
 +        self._info(f"AutopilotDronekit yaw-rate command deg_per_sec={deg_per_sec}")
++        self._profile("yaw_rate_sent", deg_per_sec=deg_per_sec)
          # print(dDegPerSec)
          rotation_direction = 1
          if (0 > deg_per_sec):
-@@ -122,25 +170,43 @@ class AutopilotDronekit(AbstractAutopilot):
+@@ -122,25 +222,51 @@ class AutopilotDronekit(AbstractAutopilot):
  
      def print_status(self):
          self._lock.acquire()  # ------------------------------------ Lock -------------------------------------
@@ -185,32 +908,57 @@ index 52a5b91..6e6cf36 100644
 +            f"altitude={self._status['altitude']} gps_fix={self._status['gps_fix']} "
 +            f"armable={self._status['armable']} state={self._status['state']}"
 +        )
++        self._profile(
++            "status_emitted",
++            mode=self._status['mode'],
++            armed=self._status['armed'],
++            altitude=self._status['altitude'],
++            gps_fix=self._status['gps_fix'],
++            state=self._status['state'],
++        )
          return super(AutopilotDronekit, self).print_status()
  
  ###################################################################################
 diff --git a/src/HighLevelControl/AutoPilots/AutopilotBridge.py b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
-index 0ff27e3..052ebdc 100644
+index 0ff27e3..4715395 100644
 --- a/src/HighLevelControl/AutoPilots/AutopilotBridge.py
 +++ b/src/HighLevelControl/AutoPilots/AutopilotBridge.py
-@@ -10,6 +10,7 @@ import sys
+@@ -10,6 +10,9 @@ import sys
  import threading
  import time
  import re
 +import sys
++import json
++import os
  
  ###################################################################################
  # ------------------------- AutopilotBridge ----------------------------------
-@@ -30,6 +31,9 @@ class AutopilotBridge(object):
+@@ -26,10 +29,24 @@ class AutopilotBridge(object):
+         self._compiled_re = re.compile(self._str_token)
+         self.autopilot = autopilot
+         self.status_publisher = threading.Thread(target=self.vehicle_status)
++        self._profile_enabled = os.getenv("STACK_PROFILE", "0") == "1"
+ 
      def _shutdown(self):
          self.status_publisher.join()
  
 +    def _log(self, message):
 +        print(f"ERROR:{message}", file=sys.stderr, flush=True)
 +
++    def _profile(self, event_type, **payload):
++        if not self._profile_enabled:
++            return
++        payload.update({
++            "component": "autopilot_bridge",
++            "event_type": event_type,
++            "wall_time_epoch_sec": time.time(),
++        })
++        print(f"PROFILE:{json.dumps(payload, separators=(',', ':'))}", file=sys.stderr, flush=True)
++
      def run(self):
          """
          feed input lines from the HLC to interpreter until shutdown.
-@@ -40,7 +44,7 @@ class AutopilotBridge(object):
+@@ -40,7 +57,7 @@ class AutopilotBridge(object):
              try:
                  self.interpret_command(line)
              except Exception:
@@ -219,9 +967,55 @@ index 0ff27e3..052ebdc 100644
                  self.autopilot.shutdown()
          self._shutdown()
  
-@@ -87,9 +91,9 @@ class AutopilotBridge(object):
+@@ -50,6 +67,7 @@ class AutopilotBridge(object):
+         """
+         while self.autopilot.is_active():
+             print(self._str_token + self.autopilot.print_status(), flush=True)
++            self._profile("status_emitted")
+             time.sleep(1)
+ 
+     def interpret_command(self, str_command):
+@@ -62,34 +80,47 @@ class AutopilotBridge(object):
+             str_command = str_command[len(enum_command.group(0)):]
+             tup_args = str_command.split()
+             num_command = int(tup_args[0])
++            self._profile("command_interpreted", command_id=num_command)
+             if (0 == num_command):
+                 # shutdown
+                 self.autopilot.shutdown()
+             elif (1 == num_command):
+                 # Prepare for takeoff
+                 self.autopilot.ready2takeoff()
++                self._profile("ready_for_takeoff_requested")
+             elif (2 == num_command):
+                 # Arm
+                 self.autopilot.arm()
++                self._profile("arm_requested")
+             elif (3 == num_command):
+                 # Takeoff
+                 self.autopilot.takeoff(float(tup_args[1]))
++                self._profile("takeoff_requested", altitude=float(tup_args[1]))
+             elif (4 == num_command):
+                 # Land
+                 self.autopilot.land()
++                self._profile("land_requested")
+             elif (5 == num_command):
+                 # Body Frame Velocity Command
+                 self.autopilot.set_velocity_body_frame(float(tup_args[1]), float(tup_args[2]), float(tup_args[3]))
++                self._profile(
++                    "body_velocity_requested",
++                    forward=float(tup_args[1]),
++                    right=float(tup_args[2]),
++                    down=float(tup_args[3]),
++                )
+             elif (6 == num_command):
+                 # Yaw Rate
+                 self.autopilot.set_yaw_rate(float(tup_args[1]))
++                self._profile("yaw_rate_requested", deg_per_sec=float(tup_args[1]))
+             elif (7 == num_command):
                  # RTL
                  self.autopilot.rtl()
++                self._profile("rtl_requested")
              else:
 -                print("AutopilotBridge:: unknown command")
 +                self._log("AutopilotBridge:: unknown command")
@@ -232,10 +1026,10 @@ index 0ff27e3..052ebdc 100644
  # Test script
  if __name__ == "__main__":
 diff --git a/src/HighLevelControl/AutoPilots/AutopilotFactory.py b/src/HighLevelControl/AutoPilots/AutopilotFactory.py
-index 63c9b8e..debec20 100644
+index 63c9b8e..e914146 100644
 --- a/src/HighLevelControl/AutoPilots/AutopilotFactory.py
 +++ b/src/HighLevelControl/AutoPilots/AutopilotFactory.py
-@@ -44,7 +44,11 @@ class AutopilotFactory(object):
+@@ -44,7 +44,14 @@ class AutopilotFactory(object):
          if ('tello' == dict_config['type']):
              return AutopilotTello.AutopilotTello(dict_config["network interface"], ('true' == dict_config["enable_camera"]))
          elif ('dronekit' == dict_config['type']):
@@ -243,7 +1037,10 @@ index 63c9b8e..debec20 100644
 +            return AutopilotDronekit.AutopilotDronekit(
 +                dict_config["master"],
 +                dict_config["baud"],
-+                dict_config.get("force_arm", False),
++                force_arm=dict_config.get("force_arm", False),
++                heartbeat_timeout_sec=dict_config.get("heartbeat_timeout_sec", 30),
++                connection_timeout_sec=dict_config.get("connection_timeout_sec", 60),
++                connect_retry_budget_sec=dict_config.get("connect_retry_budget_sec", 60),
 +            )
          else:
              raise KeyError(dict_config)
@@ -258,19 +1055,76 @@ index 87b5cfb..4d8a154 100644
 +future
  pyserial
 diff --git a/src/HighLevelControl/Autopilot.cpp b/src/HighLevelControl/Autopilot.cpp
-index 1f65118..8c1093e 100644
+index 1f65118..f4f43e2 100644
 --- a/src/HighLevelControl/Autopilot.cpp
 +++ b/src/HighLevelControl/Autopilot.cpp
-@@ -14,6 +14,25 @@
+@@ -13,7 +13,82 @@
+ #include <LlcStatusMessage.h>
  #include <StringMessage.h>
  #include <GetTimeString.h>
++#include <chrono>
  #include <stdexcept>
++#include <cstdlib>
 +
 +namespace
 +{
 +bool StartsWith(const std::string& value, const std::string& prefix)
 +{
 +	return value.rfind(prefix, 0) == 0;
++}
++
++bool StackProfileEnabled()
++{
++	const char * value = std::getenv("STACK_PROFILE");
++	return (value != nullptr) && (std::string(value) == "1");
++}
++
++double WallTimeEpochSec()
++{
++	using clock = std::chrono::system_clock;
++	return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++
++std::string EscapeJson(const std::string& text)
++{
++	std::string escaped;
++	escaped.reserve(text.size() + 8);
++	for (char ch : text)
++	{
++		switch (ch)
++		{
++			case '\\':
++				escaped += "\\\\";
++				break;
++			case '"':
++				escaped += "\\\"";
++				break;
++			case '\n':
++				escaped += "\\n";
++				break;
++			case '\r':
++				escaped += "\\r";
++				break;
++			case '\t':
++				escaped += "\\t";
++				break;
++			default:
++				escaped += ch;
++				break;
++		}
++	}
++	return escaped;
++}
++
++void EmitProfile(const std::string& event_type, const std::string& payload_json)
++{
++	if (!StackProfileEnabled())
++	{
++		return;
++	}
++	std::cout << "PROFILE:{\"component\":\"autopilot\",\"event_type\":\""
++		<< event_type << "\",\"wall_time_epoch_sec\":" << WallTimeEpochSec()
++		<< "," << payload_json << "}" << std::endl;
 +}
 +
 +bool ShouldPublishAsPlatformError(const std::string& line)
@@ -287,18 +1141,46 @@ index 1f65118..8c1093e 100644
  //--------------------------------------------------------------------------------
  
  Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher* pLlcErrorPublisher,
-@@ -29,6 +48,10 @@ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher*
+@@ -28,7 +103,20 @@ Autopilot::Autopilot(NeMALA::Publisher* pLlcStatusPublisher, NeMALA::Publisher*
+ 	m_pathPythonExecutable = ptArgs.get<std::string>("full_path_to_python");
  	m_dTargetAltitude = ptArgs.get<double>("altitude");
  	m_dLowBatVoltage = ptArgs.get<double>("low_bat_voltage");
++	m_unArmTimeoutMs = ptArgs.get<unsigned int>("arm_timeout_ms", 10000);
++	m_unTakeoffTimeoutMs = ptArgs.get<unsigned int>(
++		"takeoff_timeout_ms",
++		static_cast<unsigned int>(m_dTargetAltitude * 3000.0 + 5000.0)
++	);
++	m_bRequireGpsFixForReady = ptArgs.get<bool>("require_gps_fix_for_ready", true);
  	m_strExecutable = "run_autopilot.py";
 +	std::cout << AlateUtils::GetTimeString()
 +		<< "Autopilot config loaded: python=" << m_pathPythonExecutable.string()
 +		<< " altitude=" << m_dTargetAltitude
++		<< " arm_timeout_ms=" << m_unArmTimeoutMs
++		<< " takeoff_timeout_ms=" << m_unTakeoffTimeoutMs
++		<< " require_gps_fix_for_ready=" << m_bRequireGpsFixForReady
 +		<< " low_bat_voltage=" << m_dLowBatVoltage << std::endl;
  
  	m_pThreadWriteToLlc = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
  	m_pThreadReadFromLlcErr  = new boost::thread(boost::bind(&boost::asio::io_service::run,&m_io_service));
-@@ -74,8 +97,11 @@ void Autopilot::HandleErrorMessages()
+@@ -65,7 +153,16 @@ void Autopilot::HandleErrorMessages()
+ 	{
+ 		if (std::string::npos != strLine.find("Link timeout, no heartbeat in last 5 seconds"))
+ 		{
+-			Shutdown();
++			if (!m_hasReachedReadyCapableStatus.load())
++			{
++				std::cout << AlateUtils::GetTimeString()
++					<< "Autopilot: suppressing pre-ready link-timeout escalation while LLC is still stabilizing"
++					<< std::endl;
++				continue;
++			}
++			std::cout << AlateUtils::GetTimeString()
++				<< "Autopilot: observed transient LLC heartbeat gap after readiness; keeping the autopilot bridge alive and waiting for recovery"
++				<< std::endl;
+ 		}
+ 		if (std::string::npos != strLine.find(" flushing stderr"))
+ 		{
+@@ -74,8 +171,12 @@ void Autopilot::HandleErrorMessages()
  		else
  		{
  			std::cout << AlateUtils::GetTimeString() << "Autopilot:: " << strLine << std::endl;
@@ -308,11 +1190,12 @@ index 1f65118..8c1093e 100644
 +			{
 +				StringMessage msg(strLine);
 +				m_pLlcErrorPublisher->Publish(msg);
++				EmitProfile("platform_error_escalated", "\"message\":\"" + EscapeJson(strLine) + "\"");
 +			}
  		}
  	}
  }
-@@ -115,7 +141,9 @@ int Autopilot::operator()()
+@@ -115,7 +216,9 @@ int Autopilot::operator()()
  
  	try
  	{
@@ -323,41 +1206,220 @@ index 1f65118..8c1093e 100644
  				m_strExecutable,
  				m_strArgs,
  				boost::process::std_out > _ipstream,
-@@ -269,6 +297,7 @@ void Autopilot::SetYawRate(double dDegPerSec)
+@@ -145,6 +248,7 @@ int Autopilot::operator()()
+ 					pos += m_strToken.length();
+ 					std::istringstream is(strLine.substr(pos));
+ 					boost::property_tree::read_json(is,pt);
++					m_hasReceivedLlcStatus.store(true);
+ 					bool bPost = false;
+ 
+ 					stLlcState.dAltitude = stState.dAltitude = pt.get<double>("altitude");
+@@ -165,13 +269,17 @@ int Autopilot::operator()()
+ 					}
+ 					else if(0 == stLlcState.strMode.compare("GUIDED"))
+ 					{
+-						if (3 < stLlcState.nGpsFix)
++						bool bReadyByGps = (3 < stLlcState.nGpsFix);
++						bool bReadyWithoutGps = (!m_bRequireGpsFixForReady) &&
++							(0 == stLlcState.strState.compare("STANDBY"));
++						if (bReadyByGps || bReadyWithoutGps)
+ 						{
+ 							// TODO: if airborne (by altitude?) stop posting ready to takeoff.
+ 							stState.eAction = InterfaceAutopilot::AutoPilotActionReadyToTakeoff;
+ 							bPost = true;
++							m_hasReachedReadyCapableStatus.store(true);
+ 						}
+-						if (m_dLowBatVoltage > stState.dBatteryVoltage)
++						if ((0 < stState.dBatteryVoltage) && (m_dLowBatVoltage > stState.dBatteryVoltage))
+ 						{
+ 							stState.eAction = InterfaceAutopilot::AutoPilotActionLowBattery;
+ 							bPost = true;
+@@ -183,6 +291,7 @@ int Autopilot::operator()()
+ 						{
+ 							stState.eAction = InterfaceAutopilot::AutoPilotActionReadyToTakeoff;
+ 							bPost = true;
++							m_hasReachedReadyCapableStatus.store(true);
+ 						}
+ 					}
+ 					else
+@@ -192,6 +301,12 @@ int Autopilot::operator()()
+ 					}
+ 					if (bPost)
+ 					{
++						EmitProfile(
++							"llc_status_received",
++							"\"action_enum\":" + std::to_string(stState.eAction) +
++							",\"armed\":" + std::string(stState.bArmed ? "true" : "false") +
++							",\"altitude\":" + std::to_string(stState.dAltitude)
++						);
+ 						m_pHlcStateMachine->PostAutoPilotEvent(stState);
+ 					}
+ 					LlcStatusMessage llcMsg(stLlcState);
+@@ -269,6 +384,8 @@ void Autopilot::SetYawRate(double dDegPerSec)
  
  void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction)
  {
 +	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting state command " << eAction << std::endl;
++	EmitProfile("command_written_to_bridge", "\"action_enum\":" + std::to_string(eAction));
  	m_opstream << m_strToken << eAction << std::endl;
  }
  
-@@ -276,6 +305,7 @@ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction
+@@ -276,6 +393,8 @@ void Autopilot::PostStateCommand(InterfaceAutopilot::AutopilotActionEnum eAction
  
  void Autopilot::PostTakeoff()
  {
 +	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting takeoff command altitude=" << m_dTargetAltitude << std::endl;
++	EmitProfile("takeoff_command_written_to_bridge", "\"target_altitude\":" + std::to_string(m_dTargetAltitude));
  	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionTakeoff << " " << m_dTargetAltitude << std::endl;
  }
  
-@@ -283,6 +313,8 @@ void Autopilot::PostTakeoff()
+@@ -283,6 +402,14 @@ void Autopilot::PostTakeoff()
  
  void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDown)
  {
 +	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting velocity command forward="
 +		<< dForward << " right=" << dRight << " down=" << dDown << std::endl;
++	EmitProfile(
++		"velocity_command_written_to_bridge",
++		"\"forward\":" + std::to_string(dForward) +
++		",\"right\":" + std::to_string(dRight) +
++		",\"down\":" + std::to_string(dDown)
++	);
  	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionVelocityBodyFrame << " " << dForward << " " << dRight << " " << dDown << std::endl;
  }
  
-@@ -290,6 +322,7 @@ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDo
+@@ -290,6 +417,8 @@ void Autopilot::PostVelocityBodyFrame(double dForward, double dRight, double dDo
  
  void Autopilot::PostYawRate(double dDegPerSec)
  {
 +	std::cout << AlateUtils::GetTimeString() << "Autopilot: posting yaw-rate command deg_per_sec=" << dDegPerSec << std::endl;
++	EmitProfile("yaw_rate_command_written_to_bridge", "\"deg_per_sec\":" + std::to_string(dDegPerSec));
  	m_opstream << m_strToken << InterfaceAutopilot::AutoPilotActionYawRate << " " << dDegPerSec << std::endl;
  }
  
+diff --git a/src/HighLevelControl/Autopilot.h b/src/HighLevelControl/Autopilot.h
+index 74848e7..7215b02 100644
+--- a/src/HighLevelControl/Autopilot.h
++++ b/src/HighLevelControl/Autopilot.h
+@@ -14,6 +14,7 @@
+ #include <boost/thread/thread.hpp>
+ #include <boost/asio.hpp>
+ #include <boost/property_tree/json_parser.hpp>
++#include <atomic>
+ #include <string>
+ #include <NeMALA/Publisher.h>
+ #include <StringMessage.h>
+@@ -52,6 +53,8 @@ public:
+ 	void SetVelocityBodyFrame(double dForward, double dRight, double dDown);
+ 	void SetYawRate(double dDegPerSec);
+ 	double GetTakeoffAltitude(){return m_dTargetAltitude;}
++	unsigned int GetArmTimeoutMs() const {return m_unArmTimeoutMs;}
++	unsigned int GetTakeoffTimeoutMs() const {return m_unTakeoffTimeoutMs;}
+ 
+ private:
+ 
+@@ -74,6 +77,9 @@ private:
+ 	NeMALA::Publisher* m_pLlcStatusPublisher;
+ 	double m_dTargetAltitude;
+ 	double m_dLowBatVoltage;
++	unsigned int m_unArmTimeoutMs;
++	unsigned int m_unTakeoffTimeoutMs;
++	bool m_bRequireGpsFixForReady;
+ 	HlcStateMachine* m_pHlcStateMachine;
+ 	std::string m_strToken;
+ 	std::string m_strExecutable;
+@@ -86,6 +92,8 @@ private:
+ 	boost::process::ipstream m_ipstream;
+ 	boost::thread* m_pThreadWriteToLlc;
+ 	boost::thread* m_pThreadReadFromLlcErr;
++	std::atomic<bool> m_hasReceivedLlcStatus{false};
++	std::atomic<bool> m_hasReachedReadyCapableStatus{false};
+ };
+ 
+ #endif /* _AUTOPILOT_H_ */
+diff --git a/src/HighLevelControl/Handlers/McHandler.cpp b/src/HighLevelControl/Handlers/McHandler.cpp
+index 866f2c7..442e1da 100755
+--- a/src/HighLevelControl/Handlers/McHandler.cpp
++++ b/src/HighLevelControl/Handlers/McHandler.cpp
+@@ -1,19 +1,34 @@
+ #include "McHandler.h"
++#include <chrono>
++#include <cstdlib>
+ #include <string>
+ #include <McMessage.h>
+ #include <iostream>
+ 
+ //--------------------------------------------------------------------------------
+ 
++namespace {
++double WallTimeEpochSec()
++{
++	using clock = std::chrono::system_clock;
++	return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}
++
+ void McHandler::Handle(NeMALA::Proptree pt)
+ {
+ 	// Build a message from the property tree received.
+ 	McMessage msg(pt);
+ 	// Extract values
+ 	McMessage::McStateEnum eState = msg.GetValue();
++	if (std::getenv("STACK_PROFILE"))
++	{
++		std::cout << "PROFILE:{\"component\":\"hlc\",\"event_type\":\"mc_state_received\",\"wall_time_epoch_sec\":"
++			<< WallTimeEpochSec() << ",\"mc_state_enum\":"
++			<< static_cast<int>(eState) << "}" << std::endl;
++	}
+ 	// Do something
+ 	m_pHlcSM->PostMcStateEvent(eState);
+ }
+ 
+ //--------------------------------------------------------------------------------
+-
+diff --git a/src/HighLevelControl/Handlers/VelocityHandler.cpp b/src/HighLevelControl/Handlers/VelocityHandler.cpp
+index 7370fb3..c4f583e 100755
+--- a/src/HighLevelControl/Handlers/VelocityHandler.cpp
++++ b/src/HighLevelControl/Handlers/VelocityHandler.cpp
+@@ -7,16 +7,35 @@
+ 
+ 
+ #include "VelocityHandler.h"
++#include <chrono>
++#include <cstdlib>
++#include <iostream>
+ #include <VelocityMessage.h>
+ 
+ //--------------------------------------------------------------------------------
+ 
++namespace {
++double WallTimeEpochSec()
++{
++	using clock = std::chrono::system_clock;
++	return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}
++
+ void VelocityHandler::Handle(NeMALA::Proptree pt)
+ {
+ 	VelocityMessage msgVelocity(pt);
++	if (std::getenv("STACK_PROFILE"))
++	{
++		std::cout << "PROFILE:{\"component\":\"hlc\",\"event_type\":\"velocity_command_received\",\"wall_time_epoch_sec\":"
++			<< WallTimeEpochSec() << ",\"forward\":"
++			<< msgVelocity.GetX() << ",\"right\":"
++			<< msgVelocity.GetY() << ",\"down\":"
++			<< msgVelocity.GetZ() << ",\"yaw_rate\":"
++			<< msgVelocity.GetYaw() << "}" << std::endl;
++	}
+ 	m_pAutopilot->SetVelocityBodyFrame(msgVelocity.GetX(),msgVelocity.GetY(), msgVelocity.GetZ());
+ 	m_pAutopilot->SetYawRate(msgVelocity.GetYaw());
+ }
+ 
+ //--------------------------------------------------------------------------------
+-
 diff --git a/src/HighLevelControl/HighLevelControl.cpp b/src/HighLevelControl/HighLevelControl.cpp
-index dca2b20..4ff32e3 100644
+index dca2b20..6417ec9 100644
 --- a/src/HighLevelControl/HighLevelControl.cpp
 +++ b/src/HighLevelControl/HighLevelControl.cpp
 @@ -54,6 +54,8 @@ int main (int argc, char *argv[])
@@ -380,46 +1442,110 @@ index dca2b20..4ff32e3 100644
  
  		try
  		{
-@@ -119,6 +125,10 @@ int main (int argc, char *argv[])
+@@ -119,6 +125,12 @@ int main (int argc, char *argv[])
  		try
  		{
  			pAutoPilot = new Autopilot(pLlcStatusPublisher, pLlcErrorPublisher, pt.get_child("autopilot"));
 +			std::cout << "HLC autopilot config: type=" << pt.get<std::string>("autopilot.type")
 +				<< " master=" << pt.get<std::string>("autopilot.master")
 +				<< " altitude=" << pt.get<double>("autopilot.altitude")
++				<< " takeoff_timeout_ms=" << pt.get("autopilot.takeoff_timeout_ms", static_cast<unsigned int>(pt.get<double>("autopilot.altitude") * 3000.0 + 5000.0))
++				<< " require_gps_fix_for_ready=" << pt.get("autopilot.require_gps_fix_for_ready", true)
 +				<< " force_arm=" << pt.get("autopilot.force_arm", false) << std::endl;
  		}
  		catch (std::exception& e)
  		{
+diff --git a/src/HighLevelControl/HlcStateMachine.cpp b/src/HighLevelControl/HlcStateMachine.cpp
+index c0e9f30..e8d4caf 100644
+--- a/src/HighLevelControl/HlcStateMachine.cpp
++++ b/src/HighLevelControl/HlcStateMachine.cpp
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "HlcStateMachine.h"
++#include <iostream>
+ 
+ //--------------------------------------------------------------------------------
+ 
+@@ -48,6 +49,14 @@ void HlcStateMachine::PostMcStateEvent(McMessage::McStateEnum eState)
+ 
+ void HlcStateMachine::PostAutoPilotEvent(InterfaceAutopilot::AutopilotState stState)
+ {
++	if (std::getenv("STACK_PROFILE"))
++	{
++		std::cout << "PROFILE:{\"component\":\"hlc\",\"event_type\":\"autopilot_event_posted\",\"wall_time_epoch_sec\":"
++			<< HlcStateMachine::ProfileWallTimeEpochSec() << ",\"action_enum\":"
++			<< static_cast<int>(stState.eAction) << ",\"armed\":"
++			<< (stState.bArmed ? "true" : "false") << ",\"altitude\":"
++			<< stState.dAltitude << "}" << std::endl;
++	}
+ 	m_io_service.post(boost::bind(&HlcStateMachine::HandleAutoPilotEvent, this, stState));
+ }
+ 
 diff --git a/src/HighLevelControl/HlcStateMachine.h b/src/HighLevelControl/HlcStateMachine.h
-index ac8d9de..b459518 100644
+index ac8d9de..607c3d4 100644
 --- a/src/HighLevelControl/HlcStateMachine.h
 +++ b/src/HighLevelControl/HlcStateMachine.h
-@@ -262,7 +262,10 @@ private:
+@@ -25,7 +25,9 @@
+ #include "InterfaceAutopilot.h"
+ #include <GetTimeString.h>
+ 
++#include <chrono>
+ #include <iostream>
++#include <cstdlib>
+ 
+ /*
+  * A class defining a state machine for the High Level Control Module (HLC)
+@@ -55,6 +57,12 @@ private:
+ 
+ 	// ------------------------ Constants and Type Declarations ---------------------------
+ 
++	static double ProfileWallTimeEpochSec()
++	{
++		using clock = std::chrono::system_clock;
++		return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++	}
++
+ 	/*
+ 	 * All states in the HLC state machine publish the current state upon entry
+ 	 */
+@@ -73,6 +81,12 @@ private:
+ 		{
+ 			HlcStateMessage msg(m_eState);
+ 			std::cout << AlateUtils::GetTimeString() << "HLC entering state: " << msg.GetName() << std::endl;
++			if (std::getenv("STACK_PROFILE"))
++			{
++				std::cout << "PROFILE:{\"component\":\"hlc\",\"event_type\":\"state_entered\",\"wall_time_epoch_sec\":"
++					<< ProfileWallTimeEpochSec() << ",\"state_name\":\""
++					<< msg.GetName() << "\"}" << std::endl;
++			}
+ 			fsm.Publish(msg);
+ 		}
+ 
+@@ -262,7 +276,9 @@ private:
  			void on_entry(Event const& ev,FSM& fsm)
  			{
  				HlcState::on_entry(ev,fsm);
 -				fsm.SetTimer(3000);
-+				// Gazebo-backed SITL can take several seconds to complete arming after a
-+				// valid takeoff request. Keep the arm phase alive long enough to receive
-+				// the armed transition before falling back to Ready.
-+				fsm.SetTimer(10000);
++				// Shared-world fleet runs can take noticeably longer to acknowledge
++				// arming than single-drone SITL, so keep this budget configurable.
++				fsm.SetTimer(fsm.GetAutoPilot()->GetArmTimeoutMs());
  				fsm.GetAutoPilot()->Arm();
  			}
  
-@@ -280,8 +283,9 @@ private:
+@@ -280,8 +296,9 @@ private:
  			void on_entry(Event const& ev,FSM& fsm)
  			{
  				HlcState::on_entry(ev,fsm);
 -				// A second for each meter, + 5 seconds to think about it.
 -				fsm.SetTimer(fsm.GetAutoPilot()->GetTakeoffAltitude() * 1000 + 5000);
-+				// Gazebo-backed SITL climbs more slowly than the legacy timeout budget.
-+				// Give takeoff enough time to reach a stable airborne state before forcing landing.
-+				fsm.SetTimer(fsm.GetAutoPilot()->GetTakeoffAltitude() * 3000 + 5000);
++				// Keep the default single-drone behavior, but allow slower fleet
++				// profiles to override the wall-clock takeoff budget explicitly.
++				fsm.SetTimer(fsm.GetAutoPilot()->GetTakeoffTimeoutMs());
  				fsm.GetAutoPilot()->Takeoff();
  			}
  		};
-@@ -591,6 +595,7 @@ private:
+@@ -591,6 +608,7 @@ private:
  		boost::msm::front::Row < Manual			 	, EventAutoPilot				, Ready						, GetReadyForTakeoff		, IsAutoPilotLanded>,
  		boost::msm::front::Row < Manual 			, EventMcState					, boost::msm::front::none	, boost::msm::front::none	, IsMcStateManual>,
  		//-----------------------------------------+-------------------------------+---------------------------+---------------------------+-------------------------+
@@ -427,6 +1553,58 @@ index ac8d9de..b459518 100644
  		boost::msm::front::Row < ReturnToLaunch	 	, EventAutoPilot				, Ready						, GetReadyForTakeoff		, IsAutoPilotLanded>
  		//-----------------------------------------+-------------------------------+---------------------------+---------------------------+-------------------------+
  		> {};
+diff --git a/src/HighLevelControl/InterfaceAutopilot.h b/src/HighLevelControl/InterfaceAutopilot.h
+index f75e258..4966072 100644
+--- a/src/HighLevelControl/InterfaceAutopilot.h
++++ b/src/HighLevelControl/InterfaceAutopilot.h
+@@ -58,6 +58,8 @@ public:
+ 	virtual void SetVelocityBodyFrame(double dForward, double dRight, double dDown) = 0;
+ 	virtual void SetYawRate(double dDegPerSec) = 0;
+ 	virtual double GetTakeoffAltitude() = 0;
++	virtual unsigned int GetArmTimeoutMs() const = 0;
++	virtual unsigned int GetTakeoffTimeoutMs() const = 0;
+ 
+ };
+ 
+diff --git a/src/MissionControl/Handlers/OpHandler.cpp b/src/MissionControl/Handlers/OpHandler.cpp
+index d8cb925..8919f0e 100644
+--- a/src/MissionControl/Handlers/OpHandler.cpp
++++ b/src/MissionControl/Handlers/OpHandler.cpp
+@@ -1,18 +1,33 @@
+ #include <OpMessage.h>
++#include <chrono>
++#include <cstdlib>
+ #include <iostream>
+ #include "OpHandler.h"
+ 
+ //--------------------------------------------------------------------------------
+ 
++namespace {
++double WallTimeEpochSec()
++{
++	using clock = std::chrono::system_clock;
++	return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++}
++}
++
+ void OpHandler::Handle(NeMALA::Proptree pt)
+ {
+ 	// Build a message from the property tree received.
+ 	OpMessage msg(pt);
+ 	// Extract values
+ 	OpMessage::OpCommandEnum eCommand = msg.GetValue();
++	if (std::getenv("STACK_PROFILE"))
++	{
++		std::cout << "PROFILE:{\"component\":\"mc\",\"event_type\":\"operator_command_received\",\"wall_time_epoch_sec\":"
++			<< WallTimeEpochSec() << ",\"op_command_enum\":"
++			<< static_cast<int>(eCommand) << "}" << std::endl;
++	}
+ 	// Do something
+ 	m_pMcmSM->HandleOpEvent(eCommand);
+ }
+ 
+ //--------------------------------------------------------------------------------
+-
 diff --git a/src/MissionControl/MissionControl.cpp b/src/MissionControl/MissionControl.cpp
 index 09cac67..712aeaa 100644
 --- a/src/MissionControl/MissionControl.cpp
@@ -451,11 +1629,74 @@ index 09cac67..712aeaa 100644
  
  		try
  		{
+diff --git a/src/MissionControl/MissionControlStateMachine.cpp b/src/MissionControl/MissionControlStateMachine.cpp
+index 8010066..5c4c0af 100644
+--- a/src/MissionControl/MissionControlStateMachine.cpp
++++ b/src/MissionControl/MissionControlStateMachine.cpp
+@@ -6,9 +6,6 @@
+  */
+ 
+ #include "MissionControlStateMachine.h"
+-
+-//--------------------------------------------------------------------------------
+-
+ MissionControlStateMachine::MissionControlStateMachine(NeMALA::Publisher* pPublisher):
+ m_pPublisher(pPublisher)
+ {
 diff --git a/src/MissionControl/MissionControlStateMachine.h b/src/MissionControl/MissionControlStateMachine.h
-index 9794596..3d4de11 100644
+index 9794596..1779241 100644
 --- a/src/MissionControl/MissionControlStateMachine.h
 +++ b/src/MissionControl/MissionControlStateMachine.h
-@@ -430,6 +430,7 @@ public:
+@@ -17,7 +17,9 @@
+ #include <GetTimeString.h>
+ #include <OpMessage.h>
+ 
++#include <chrono>
+ #include <iostream>
++#include <cstdlib>
+ 
+ 
+ /*
+@@ -38,6 +40,12 @@ public:
+ 
+ 	// ------------------------ Constants and Type Declarations ---------------------------
+ 
++	static double ProfileWallTimeEpochSec()
++	{
++		using clock = std::chrono::system_clock;
++		return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
++	}
++
+ 	/*
+ 	 * All states in the MCM state machine publish the current state upon entry
+ 	 */
+@@ -58,6 +66,12 @@ public:
+ 			{
+ 				McMessage msg(m_eState);
+ 				std::cout << AlateUtils::GetTimeString() << "MissionControl entering state: " << msg.GetName() << std::endl;
++				if (std::getenv("STACK_PROFILE"))
++				{
++					std::cout << "PROFILE:{\"component\":\"mc\",\"event_type\":\"state_entered\",\"wall_time_epoch_sec\":"
++						<< ProfileWallTimeEpochSec() << ",\"state_name\":\""
++						<< msg.GetName() << "\"}" << std::endl;
++				}
+ 				fsm.Publish(msg);
+ 			}
+ 
+@@ -166,6 +180,12 @@ public:
+     			{
+     				McMessage msg(McMessage::McStateError);
+     				std::cout << AlateUtils::GetTimeString() << "MissionControl entering state: " << msg.GetName() << std::endl;
++				if (std::getenv("STACK_PROFILE"))
++				{
++					std::cout << "PROFILE:{\"component\":\"mc\",\"event_type\":\"state_entered\",\"wall_time_epoch_sec\":"
++						<< ProfileWallTimeEpochSec() << ",\"state_name\":\""
++						<< msg.GetName() << "\"}" << std::endl;
++				}
+     				fsm.Publish(msg);
+     			}
+     		};
+@@ -430,6 +450,7 @@ public:
  			boost::msm::front::Row < Landing 			, EventHlcState		, Standby			, boost::msm::front::none , IsHlcStateReady>,
  			boost::msm::front::Row < Landing 			, EventHlcState		, Manual			, boost::msm::front::none , IsHlcStateManual>,
              //-----------------------------------------+--------------------+-------------------+-------------------------+--------------------+

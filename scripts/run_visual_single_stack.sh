@@ -158,7 +158,7 @@ fi
 
 start_profile_supervisor() {
   local sitl_host="$1"
-  local mavlink_port="$2"
+  local profile_mavlink_port="$2"
   local profile_supervisor_log="${run_logs_dir}/profile-supervisor.log"
 
   if [ "${profile_enabled}" != '1' ]; then
@@ -187,7 +187,7 @@ start_profile_supervisor() {
     --container "${STACK_NAME}-visual-gui" \
     --container "${STACK_NAME}-profile-visual" \
     --container "${STACK_NAME}-profile-ros" \
-    --drone-endpoint "drone_1=tcp:${sitl_host}:${mavlink_port}"
+    --drone-endpoint "drone_1=tcp:${sitl_host}:${profile_mavlink_port}"
 
   install -m 755 "${ROOT_DIR}/sim/tools/stack_visual_profiler.py" "${visual_tools_dir}/stack_visual_profiler.py"
   nohup python3 "${ROOT_DIR}/scripts/stack_profile_supervisor.py" \
@@ -544,6 +544,10 @@ docker run -d --rm \
 start_log_capture "${STACK_NAME}-sitl" "${run_logs_dir}/sitl.log"
 
 visual_mavlink_port="$(detect_visual_mavlink_port)"
+profile_mavlink_port='5763'
+if [ "${visual_mavlink_port}" = '5763' ]; then
+  profile_mavlink_port='5762'
+fi
 sitl_runtime_host="$(
   docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${STACK_NAME}-sitl"
 )"
@@ -553,7 +557,7 @@ fi
 sed "s#\"master\": \"tcp:sitl:[0-9]\\+\"#\"master\": \"tcp:sitl:${visual_mavlink_port}\"#" \
   "${visual_runtime_config_src}" >"${visual_runtime_config_host}"
 cp "${visual_runtime_config_host}" "${current_run_dir}/uav.visual.sitl.generated.json"
-start_profile_supervisor "${sitl_runtime_host}" "${visual_mavlink_port}"
+start_profile_supervisor "sitl" "${profile_mavlink_port}"
 
 docker run -d --rm \
   --name "${STACK_NAME}-proxy" \

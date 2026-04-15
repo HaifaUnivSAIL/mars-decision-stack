@@ -6,7 +6,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import re
 import statistics
 from bisect import bisect_left
@@ -15,9 +14,56 @@ from typing import Any
 
 
 PROFILE_PATTERN = re.compile(r'PROFILE:(\{.*\})')
+ROS_LOG_TS_PATTERN = re.compile(r'\[(\d+\.\d+)\]')
+DRONE_ID_PATTERN = re.compile(r'(drone_\d+)')
 ALTITUDE_THRESHOLD_M = 1.0
 MOTION_DELTA_THRESHOLD_M = 0.15
 SERVO_DELTA_THRESHOLD = 5.0
+TAKEOFF_ALTITUDE_EPSILON_M = 0.05
+YAW_SPIN_THRESHOLD_DEG = 45.0
+YAW_RATE_SPIN_THRESHOLD_RAD_S = 0.8
+CONTROL_COMPONENTS = {
+    'manual_runtime_test',
+    'command_publisher',
+    'scenario_node',
+    'ros_alate',
+    'mc',
+    'hlc',
+    'autopilot',
+    'autopilot_bridge',
+    'autopilot_dronekit',
+}
+
+
+MC_STATE_NAMES = {
+    0: 'None',
+    1: 'Init',
+    2: 'Standby',
+    3: 'TakingOff',
+    4: 'PerformingMission',
+    5: 'Landing',
+    6: 'Manual',
+    7: 'ReturnToLaunch',
+    8: 'NoError',
+    9: 'Error',
+}
+
+HLC_STATE_NAMES = {
+    0: 'None',
+    1: 'Init',
+    2: 'WaitingForMc',
+    3: 'WaitingForLlc',
+    4: 'Ready',
+    5: 'Takeoff',
+    6: 'GainingAltitude',
+    7: 'Airborne',
+    8: 'Landing',
+    9: 'Manual',
+    10: 'ReturnToLaunch',
+    11: 'NoError',
+    12: 'LowBattery',
+    13: 'LlcDown',
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,11 +102,33 @@ def safe_int(value: Any) -> int | None:
         return None
 
 
+def safe_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {'1', 'true', 'yes'}:
+        return True
+    if text in {'0', 'false', 'no'}:
+        return False
+    return None
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with path.open(newline='') as handle:
         return list(csv.DictReader(handle))
+
+
+def write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, '') for name in fieldnames})
 
 
 def percentile(values: list[float], q: float) -> float | None:
@@ -89,6 +157,15 @@ def series_stats(values: list[float]) -> dict[str, float | None]:
         'min': min(values),
         'max': max(values),
     }
+
+
+def wrap_angle_delta(current: float, baseline: float) -> float:
+    delta = current - baseline
+    while delta > math.pi:
+        delta -= 2.0 * math.pi
+    while delta < -math.pi:
+        delta += 2.0 * math.pi
+    return delta
 
 
 class SimTimeInterpolator:
@@ -129,7 +206,12 @@ class ProfileAnalyzer:
         self.manifest = load_json(self.profile_dir / 'profile.manifest.json')
         self.summary_path = self.profile_dir / 'summary.json'
         self.summary_md_path = self.profile_dir / 'summary.md'
+        self.control_summary_path = self.profile_dir / 'control_summary.json'
+        self.control_summary_md_path = self.profile_dir / 'control_summary.md'
         self.component_events_path = self.profile_dir / 'component_events.csv'
+        self.control_events_path = self.profile_dir / 'control_events.csv'
+        self.control_windows_path = self.profile_dir / 'control_windows.csv'
+
         self.ros_events = [self._normalize_ros_event(row) for row in read_csv_rows(self.profile_dir / 'ros_events.csv')]
         self.pose_rows = read_csv_rows(self.profile_dir / 'pose_trace.csv')
         self.world_rows = read_csv_rows(self.profile_dir / 'world_stats.csv')
@@ -138,7 +220,14 @@ class ProfileAnalyzer:
         self.gpu_rows = read_csv_rows(self.profile_dir / 'gpu_stats.csv')
         self.focus_rows = read_csv_rows(self.profile_dir / 'focus_events.csv')
         self.sim_time = SimTimeInterpolator(self.world_rows)
+        self._mavlink_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.component_events = self._extract_component_events()
+
+    def _default_drone_id(self) -> str:
+        drones = self.manifest.get('drones', [])
+        if drones:
+            return drones[0]['id']
+        return 'drone_1'
 
     def _normalize_ros_event(self, row: dict[str, str]) -> dict[str, Any]:
         payload = {}
@@ -155,6 +244,17 @@ class ProfileAnalyzer:
             'payload': payload,
         }
 
+    def _infer_drone_id(self, root: Path, path: Path) -> str:
+        rel_parts = path.relative_to(root).parts
+        if rel_parts and rel_parts[0].startswith('drone_'):
+            return rel_parts[0]
+        match = DRONE_ID_PATTERN.search(path.name)
+        if match:
+            return match.group(1)
+        if len(self.manifest.get('drones', [])) == 1:
+            return self._default_drone_id()
+        return ''
+
     def _extract_component_events(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         log_roots = [self.run_dir / 'logs', self.run_dir / 'analysis']
@@ -162,10 +262,7 @@ class ProfileAnalyzer:
             if not root.exists():
                 continue
             for path in sorted(root.rglob('*.log')):
-                drone_id = ''
-                rel_parts = path.relative_to(root).parts
-                if rel_parts and rel_parts[0].startswith('drone_'):
-                    drone_id = rel_parts[0]
+                drone_id = self._infer_drone_id(root, path)
                 with path.open(errors='replace') as handle:
                     for line in handle:
                         match = PROFILE_PATTERN.search(line)
@@ -175,9 +272,17 @@ class ProfileAnalyzer:
                             payload = json.loads(match.group(1))
                         except Exception:
                             continue
+                        wall_time = safe_float(payload.get('wall_time_epoch_sec'))
+                        if wall_time is None:
+                            ts_match = ROS_LOG_TS_PATTERN.search(line)
+                            if ts_match:
+                                wall_time = safe_float(ts_match.group(1))
+                        if wall_time is None:
+                            continue
+                        payload['wall_time_epoch_sec'] = wall_time
                         rows.append(
                             {
-                                'wall_time_epoch_sec': safe_float(payload.get('wall_time_epoch_sec')),
+                                'wall_time_epoch_sec': wall_time,
                                 'component': payload.get('component', ''),
                                 'event_type': payload.get('event_type', ''),
                                 'drone_id': payload.get('drone_id', drone_id),
@@ -187,26 +292,124 @@ class ProfileAnalyzer:
                             }
                         )
         rows.sort(key=lambda row: (row['wall_time_epoch_sec'] or 0.0, row['component'], row['event_type']))
-        with self.component_events_path.open('w', newline='') as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=['wall_time_epoch_sec', 'component', 'event_type', 'drone_id', 'payload_json', 'source_file'],
-            )
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({k: row[k] for k in writer.fieldnames})
+        write_csv_rows(
+            self.component_events_path,
+            ['wall_time_epoch_sec', 'component', 'event_type', 'drone_id', 'payload_json', 'source_file'],
+            rows,
+        )
         return rows
 
     def _rows_for_drone(self, rows: list[dict[str, Any]], drone_id: str, key: str = 'drone_id') -> list[dict[str, Any]]:
         return [row for row in rows if str(row.get(key, '')) == drone_id]
 
-    def _ros_event_time(self, row: dict[str, Any]) -> float | None:
-        return row.get('wall_time_epoch_sec')
+    def _mavlink_rows(self, drone_id: str, filename: str) -> list[dict[str, Any]]:
+        key = (drone_id, filename)
+        if key not in self._mavlink_cache:
+            path = self.profile_dir / 'mavlink' / drone_id / filename
+            normalized = []
+            for row in read_csv_rows(path):
+                normalized_row = dict(row)
+                normalized_row['host_time_sec'] = safe_float(row.get('host_time_sec'))
+                normalized.append(normalized_row)
+            self._mavlink_cache[key] = normalized
+        return self._mavlink_cache[key]
+
+    def _servo_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        return self._mavlink_rows(drone_id, 'servo_output_raw.csv')
+
+    def _attitude_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        return self._mavlink_rows(drone_id, 'attitude.csv')
+
+    def _local_position_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        return self._mavlink_rows(drone_id, 'local_position_ned.csv')
+
+    def _heartbeat_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        rows = []
+        for row in self._mavlink_rows(drone_id, 'heartbeat.csv'):
+            rows.append(
+                {
+                    **row,
+                    'armed': safe_bool(row.get('armed')),
+                    'mode_string': row.get('mode_string', ''),
+                    'system_status': safe_int(row.get('system_status')),
+                }
+            )
+        return rows
+
+    def _statustext_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        rows = []
+        for row in self._mavlink_rows(drone_id, 'statustext.csv'):
+            rows.append(
+                {
+                    **row,
+                    'severity': safe_int(row.get('severity')),
+                    'text': row.get('text', ''),
+                }
+            )
+        return rows
+
+    def _position_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        result = []
+        for row in self.pose_rows:
+            if row.get('drone_id') != drone_id:
+                continue
+            result.append(
+                {
+                    **row,
+                    'wall_time_epoch_sec': safe_float(row.get('wall_time_epoch_sec')),
+                    'sim_time_sec': safe_float(row.get('sim_time_sec')),
+                    'x': safe_float(row.get('x')),
+                    'y': safe_float(row.get('y')),
+                    'z': safe_float(row.get('z')),
+                    'yaw': safe_float(row.get('yaw')),
+                    'pose_backlog_sec': safe_float(row.get('pose_backlog_sec')),
+                }
+            )
+        return result
+
+    def _telemetry_rows(self, drone_id: str) -> list[dict[str, Any]]:
+        result = []
+        for row in self._rows_for_drone(self.ros_events, drone_id):
+            if row.get('event_type') != 'hlc_telemetry':
+                continue
+            result.append(
+                {
+                    **row,
+                    'altitude': safe_float(row['payload'].get('altitude')),
+                    'yaw': safe_float(row['payload'].get('yaw')),
+                    'armed': bool(row['payload'].get('armed', False)),
+                    'mode': row['payload'].get('mode', ''),
+                    'state': row['payload'].get('state', ''),
+                }
+            )
+        result.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
+        return result
+
+    def _operator_commands(self, drone_id: str) -> list[dict[str, Any]]:
+        rows = self._rows_for_drone(self.ros_events, drone_id)
+        commands = [
+            row
+            for row in rows
+            if row.get('event_type') == 'input_operator_command' and row['payload'].get('op_com_name') in {'takeoff', 'land', 'gohome'}
+        ]
+        commands.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
+        return commands
+
+    def _velocity_commands(self, drone_id: str) -> list[dict[str, Any]]:
+        rows = self._rows_for_drone(self.ros_events, drone_id)
+        commands = [
+            row
+            for row in rows
+            if row.get('event_type') == 'input_velocity'
+            and any(abs(float(row['payload'].get(axis, 0.0))) > 1e-6 for axis in ('linear_x', 'linear_y', 'linear_z'))
+        ]
+        commands.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
+        return commands
 
     def _first_event_time(self, rows: list[dict[str, Any]], predicate) -> float | None:
         for row in rows:
             if predicate(row):
-                return self._ros_event_time(row)
+                return row.get('wall_time_epoch_sec')
         return None
 
     def _startup_metrics(self, drone_id: str) -> dict[str, float | None]:
@@ -228,33 +431,13 @@ class ProfileAnalyzer:
             'startup_time_to_hlc_ready_sec': None if hlc_ready is None or first_row_time is None else hlc_ready - first_row_time,
         }
 
-    def _operator_commands(self, drone_id: str) -> list[dict[str, Any]]:
-        rows = self._rows_for_drone(self.ros_events, drone_id)
-        return [
-            row for row in rows
-            if row.get('event_type') == 'input_operator_command' and row['payload'].get('op_com_name') in {'takeoff', 'land', 'gohome'}
-        ]
-
-    def _velocity_commands(self, drone_id: str) -> list[dict[str, Any]]:
-        rows = self._rows_for_drone(self.ros_events, drone_id)
-        return [
-            row for row in rows
-            if row.get('event_type') == 'input_velocity' and any(abs(float(row['payload'].get(axis, 0.0))) > 1e-6 for axis in ('linear_x', 'linear_y', 'linear_z'))
-        ]
-
-    def _servo_rows(self, drone_id: str) -> list[dict[str, Any]]:
-        return read_csv_rows(self.profile_dir / 'mavlink' / drone_id / 'servo_output_raw.csv')
-
-    def _position_rows(self, drone_id: str) -> list[dict[str, Any]]:
-        return [row for row in self.pose_rows if row.get('drone_id') == drone_id]
-
     def _first_servo_change_latency(self, drone_id: str, command_time: float) -> dict[str, float | None]:
         rows = self._servo_rows(drone_id)
         if not rows:
             return {'wall_sec': None, 'sim_sec': None}
         baseline = None
         for row in rows:
-            host = safe_float(row.get('host_time_sec'))
+            host = row.get('host_time_sec')
             if host is not None and host <= command_time:
                 baseline = row
             if host is not None and host > command_time:
@@ -263,7 +446,7 @@ class ProfileAnalyzer:
             baseline = rows[0]
         baseline_values = [safe_float(baseline.get(f'servo{i}_raw')) or 0.0 for i in range(1, 5)]
         for row in rows:
-            host = safe_float(row.get('host_time_sec'))
+            host = row.get('host_time_sec')
             if host is None or host < command_time:
                 continue
             values = [safe_float(row.get(f'servo{i}_raw')) or 0.0 for i in range(1, 5)]
@@ -282,27 +465,27 @@ class ProfileAnalyzer:
             return {'wall_sec': None, 'sim_sec': None}
         baseline = None
         for row in rows:
-            wall = safe_float(row.get('wall_time_epoch_sec'))
+            wall = row.get('wall_time_epoch_sec')
             if wall is not None and wall <= command_time:
                 baseline = row
             if wall is not None and wall > command_time:
                 break
         if baseline is None:
             baseline = rows[0]
-        base_x = safe_float(baseline.get('x')) or 0.0
-        base_y = safe_float(baseline.get('y')) or 0.0
-        base_z = safe_float(baseline.get('z')) or 0.0
+        base_x = baseline.get('x') or 0.0
+        base_y = baseline.get('y') or 0.0
+        base_z = baseline.get('z') or 0.0
         for row in rows:
-            wall = safe_float(row.get('wall_time_epoch_sec'))
+            wall = row.get('wall_time_epoch_sec')
             if wall is None or wall < command_time:
                 continue
-            x = safe_float(row.get('x')) or 0.0
-            y = safe_float(row.get('y')) or 0.0
-            z = safe_float(row.get('z')) or 0.0
+            x = row.get('x') or 0.0
+            y = row.get('y') or 0.0
+            z = row.get('z') or 0.0
             delta = math.sqrt((x - base_x) ** 2 + (y - base_y) ** 2 + (z - base_z) ** 2)
             if delta >= MOTION_DELTA_THRESHOLD_M:
                 sim_start = self.sim_time.at(command_time)
-                sim_end = safe_float(row.get('sim_time_sec')) or self.sim_time.at(wall)
+                sim_end = row.get('sim_time_sec') or self.sim_time.at(wall)
                 return {
                     'wall_sec': wall - command_time,
                     'sim_sec': None if sim_start is None or sim_end is None else sim_end - sim_start,
@@ -394,9 +577,9 @@ class ProfileAnalyzer:
 
     def _pose_summary(self, drone_id: str) -> dict[str, Any]:
         rows = self._position_rows(drone_id)
-        backlog_values = [safe_float(row.get('pose_backlog_sec')) for row in rows]
+        backlog_values = [row.get('pose_backlog_sec') for row in rows]
         backlog_values = [value for value in backlog_values if value is not None]
-        altitudes = [safe_float(row.get('z')) for row in rows]
+        altitudes = [row.get('z') for row in rows]
         altitudes = [value for value in altitudes if value is not None]
         return {
             'pose_backlog_sec': series_stats(backlog_values),
@@ -454,7 +637,543 @@ class ProfileAnalyzer:
             'pose': self._pose_summary(drone_id),
         }
 
-    def _bottlenecks(self, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    def _window_end_time(self, drone_id: str, start_time: float, operator_commands: list[dict[str, Any]]) -> float:
+        next_command_time = None
+        for command in operator_commands:
+            wall = command.get('wall_time_epoch_sec')
+            if wall is not None and wall > start_time:
+                next_command_time = wall
+                break
+        tail_candidates: list[float] = []
+        for rows in (
+            self._rows_for_drone(self.ros_events, drone_id),
+            self._rows_for_drone(self.component_events, drone_id),
+            self._position_rows(drone_id),
+            self._telemetry_rows(drone_id),
+            self._heartbeat_rows(drone_id),
+            self._statustext_rows(drone_id),
+            self._attitude_rows(drone_id),
+            self._local_position_rows(drone_id),
+        ):
+            if rows:
+                tail = rows[-1].get('wall_time_epoch_sec')
+                if tail is None:
+                    tail = rows[-1].get('host_time_sec')
+                if tail is not None:
+                    tail_candidates.append(tail)
+        if next_command_time is not None:
+            return next_command_time
+        if tail_candidates:
+            return max(tail_candidates)
+        return start_time + 60.0
+
+    def _last_value_before(self, rows: list[dict[str, Any]], time_key: str, value_key: str, cutoff: float) -> Any:
+        last_value = None
+        for row in rows:
+            wall = safe_float(row.get(time_key))
+            if wall is None:
+                continue
+            if wall <= cutoff:
+                value = row.get(value_key)
+                if value is not None:
+                    last_value = value
+            else:
+                break
+        return last_value
+
+    def _combined_altitude_samples(self, drone_id: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in self._telemetry_rows(drone_id):
+            wall = row.get('wall_time_epoch_sec')
+            altitude = row.get('altitude')
+            if wall is None or altitude is None:
+                continue
+            rows.append({'wall_time_epoch_sec': wall, 'altitude': altitude, 'source': 'ros_telemetry'})
+        for row in self._local_position_rows(drone_id):
+            wall = row.get('host_time_sec')
+            z = safe_float(row.get('z'))
+            if wall is None or z is None:
+                continue
+            rows.append({'wall_time_epoch_sec': wall, 'altitude': -z, 'source': 'mavlink_local_position'})
+        rows.sort(key=lambda row: row['wall_time_epoch_sec'])
+        return rows
+
+    def _combined_yaw_samples(self, drone_id: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in self._telemetry_rows(drone_id):
+            wall = row.get('wall_time_epoch_sec')
+            yaw = row.get('yaw')
+            if wall is None or yaw is None:
+                continue
+            rows.append({'wall_time_epoch_sec': wall, 'yaw': yaw, 'source': 'ros_telemetry'})
+        for row in self._attitude_rows(drone_id):
+            wall = row.get('host_time_sec')
+            yaw = safe_float(row.get('yaw'))
+            if wall is None or yaw is None:
+                continue
+            rows.append({'wall_time_epoch_sec': wall, 'yaw': yaw, 'source': 'mavlink_attitude'})
+        rows.sort(key=lambda row: row['wall_time_epoch_sec'])
+        return rows
+
+    def _yaw_rate_stats(self, drone_id: str, start: float, end: float) -> dict[str, float | None]:
+        values = []
+        for row in self._attitude_rows(drone_id):
+            wall = row.get('host_time_sec')
+            if wall is None or wall < start or wall > end:
+                continue
+            yaw_rate = safe_float(row.get('yawspeed'))
+            if yaw_rate is None:
+                continue
+            values.append(abs(yaw_rate))
+        return {
+            'max_abs_rad_s': max(values) if values else None,
+            'median_abs_rad_s': statistics.median(values) if values else None,
+        }
+
+    def _collect_warning_events(self, drone_id: str, start: float, end: float) -> list[dict[str, Any]]:
+        warnings = []
+        for row in self._rows_for_drone(self.ros_events, drone_id):
+            wall = row.get('wall_time_epoch_sec')
+            if wall is None or wall < start or wall > end:
+                continue
+            if row.get('event_type') == 'platform_error':
+                warnings.append({'wall_time_epoch_sec': wall, 'source': 'platform_error', 'text': row['payload'].get('error_text', '')})
+        for row in self._statustext_rows(drone_id):
+            wall = row.get('host_time_sec')
+            if wall is None or wall < start or wall > end:
+                continue
+            text = row.get('text', '')
+            if text:
+                warnings.append({'wall_time_epoch_sec': wall, 'source': 'statustext', 'text': text})
+        warnings.sort(key=lambda row: row['wall_time_epoch_sec'])
+        return warnings
+
+    def _state_sequence(self, drone_id: str, start: float, end: float, event_type: str, name_key: str) -> tuple[list[str], dict[str, float]]:
+        rows = [row for row in self._rows_for_drone(self.ros_events, drone_id) if row.get('event_type') == event_type]
+        rows.sort(key=lambda row: row.get('wall_time_epoch_sec') or 0.0)
+        current_name = None
+        current_time = start
+        sequence: list[str] = []
+        durations: dict[str, float] = {}
+        for row in rows:
+            wall = row.get('wall_time_epoch_sec')
+            if wall is None:
+                continue
+            if wall <= start:
+                current_name = str(row['payload'].get(name_key, current_name or ''))
+                current_time = start
+                continue
+            if wall > end:
+                break
+            if current_name:
+                durations[current_name] = durations.get(current_name, 0.0) + (wall - current_time)
+            current_name = str(row['payload'].get(name_key, ''))
+            current_time = wall
+            if current_name and (not sequence or sequence[-1] != current_name):
+                sequence.append(current_name)
+        if current_name:
+            durations[current_name] = durations.get(current_name, 0.0) + max(end - current_time, 0.0)
+            if current_name and (not sequence or sequence[-1] != current_name):
+                sequence.append(current_name)
+        return sequence, durations
+
+    def _takeoff_windows(self, drone_id: str) -> list[dict[str, Any]]:
+        commands = [row for row in self._operator_commands(drone_id) if row['payload'].get('op_com_name') == 'takeoff']
+        operator_commands = self._operator_commands(drone_id)
+        telemetry_rows = self._telemetry_rows(drone_id)
+        heartbeats = self._heartbeat_rows(drone_id)
+        altitude_samples = self._combined_altitude_samples(drone_id)
+        yaw_samples = self._combined_yaw_samples(drone_id)
+        component_rows = self._rows_for_drone(self.component_events, drone_id)
+        windows: list[dict[str, Any]] = []
+        for index, command in enumerate(commands, start=1):
+            start = command['wall_time_epoch_sec']
+            end = self._window_end_time(drone_id, start, operator_commands)
+            baseline_altitude = 0.0
+            for sample in altitude_samples:
+                wall = sample['wall_time_epoch_sec']
+                if wall is not None and wall <= start:
+                    baseline_altitude = sample['altitude']
+                elif wall is not None and wall > start:
+                    break
+            first_mc_transition = self._first_event_time(
+                [row for row in self._rows_for_drone(self.ros_events, drone_id) if row.get('wall_time_epoch_sec') and start <= row['wall_time_epoch_sec'] <= end],
+                lambda row: row.get('event_type') == 'mission_control_state' and row['payload'].get('mc_state_name') != 'Standby',
+            )
+            first_hlc_takeoff = self._first_event_time(
+                [row for row in self._rows_for_drone(self.ros_events, drone_id) if row.get('wall_time_epoch_sec') and start <= row['wall_time_epoch_sec'] <= end],
+                lambda row: row.get('event_type') == 'high_level_control_state' and row['payload'].get('hlc_state_name') == 'Takeoff',
+            )
+            armed_candidates = []
+            for row in telemetry_rows:
+                wall = row.get('wall_time_epoch_sec')
+                if wall is not None and start <= wall <= end and row.get('armed'):
+                    armed_candidates.append(wall)
+            for row in heartbeats:
+                wall = row.get('host_time_sec')
+                if wall is not None and start <= wall <= end and row.get('armed'):
+                    armed_candidates.append(wall)
+            first_armed = min(armed_candidates) if armed_candidates else None
+
+            takeoff_sent_times = [
+                row['wall_time_epoch_sec']
+                for row in component_rows
+                if row.get('component') == 'autopilot_dronekit'
+                and row.get('event_type') == 'takeoff_sent'
+                and row.get('wall_time_epoch_sec') is not None
+                and start <= row['wall_time_epoch_sec'] <= end
+            ]
+            takeoff_sent_times.sort()
+            first_takeoff_resend = takeoff_sent_times[1] if len(takeoff_sent_times) > 1 else None
+
+            altitude_increase = None
+            altitude_0_2 = None
+            altitude_1_0 = None
+            for sample in altitude_samples:
+                wall = sample['wall_time_epoch_sec']
+                if wall is None or wall < start or wall > end:
+                    continue
+                delta = sample['altitude'] - baseline_altitude
+                if altitude_increase is None and delta >= TAKEOFF_ALTITUDE_EPSILON_M:
+                    altitude_increase = wall
+                if altitude_0_2 is None and delta >= 0.2:
+                    altitude_0_2 = wall
+                if altitude_1_0 is None and delta >= 1.0:
+                    altitude_1_0 = wall
+            cutoff = altitude_0_2 if altitude_0_2 is not None else end
+
+            baseline_yaw = None
+            for sample in yaw_samples:
+                wall = sample['wall_time_epoch_sec']
+                if wall is not None and wall <= start:
+                    baseline_yaw = sample['yaw']
+                elif wall is not None and wall > start:
+                    break
+            if baseline_yaw is None and yaw_samples:
+                baseline_yaw = yaw_samples[0]['yaw']
+            max_yaw_delta = 0.0
+            if baseline_yaw is not None:
+                for sample in yaw_samples:
+                    wall = sample['wall_time_epoch_sec']
+                    if wall is None or wall < start or wall > cutoff:
+                        continue
+                    max_yaw_delta = max(max_yaw_delta, abs(wrap_angle_delta(sample['yaw'], baseline_yaw)))
+            yaw_rate_stats = self._yaw_rate_stats(drone_id, start, cutoff)
+
+            hlc_sequence, hlc_durations = self._state_sequence(drone_id, start, end, 'high_level_control_state', 'hlc_state_name')
+            mc_sequence, _mc_durations = self._state_sequence(drone_id, start, end, 'mission_control_state', 'mc_state_name')
+            reached_airborne = 'Airborne' in hlc_sequence
+            reached_performing_mission = 'PerformingMission' in mc_sequence
+            saw_landing = 'Landing' in hlc_sequence or 'Landing' in mc_sequence
+            warnings = self._collect_warning_events(drone_id, start, end)
+            last_warning = warnings[-1]['text'] if warnings else ''
+            has_prearm_warning = any('prearm' in warning['text'].lower() for warning in warnings)
+            actuator_latency = self._first_servo_change_latency(drone_id, start)
+            motion_latency = self._first_motion_latency(drone_id, start)
+
+            if has_prearm_warning and first_armed is None:
+                outcome = 'prearm_blocked'
+            elif altitude_1_0 is not None or reached_airborne or reached_performing_mission:
+                outcome = 'success_climb'
+            elif saw_landing:
+                outcome = 'forced_land_after_takeoff_timeout'
+            elif first_armed is not None and (math.degrees(max_yaw_delta) >= YAW_SPIN_THRESHOLD_DEG or (yaw_rate_stats['max_abs_rad_s'] or 0.0) >= YAW_RATE_SPIN_THRESHOLD_RAD_S):
+                outcome = 'yaw_spin_no_climb'
+            elif first_armed is not None:
+                outcome = 'armed_no_climb'
+            else:
+                outcome = 'insufficient_data'
+
+            target_altitude = None
+            for row in component_rows:
+                wall = row.get('wall_time_epoch_sec')
+                if wall is None or wall < start or wall > end:
+                    continue
+                payload = row.get('payload', {})
+                if row.get('event_type') in {'takeoff_requested', 'takeoff_sent'}:
+                    target_altitude = safe_float(payload.get('altitude'))
+                    if target_altitude is not None:
+                        break
+
+            window = {
+                'drone_id': drone_id,
+                'window_index': index,
+                'window_type': 'takeoff_attempt',
+                'command_name': 'takeoff',
+                'start_wall_time_sec': start,
+                'end_wall_time_sec': end,
+                'outcome': outcome,
+                'command_to_mc_transition_sec': None if first_mc_transition is None else first_mc_transition - start,
+                'command_to_hlc_takeoff_sec': None if first_hlc_takeoff is None else first_hlc_takeoff - start,
+                'command_to_first_armed_sec': None if first_armed is None else first_armed - start,
+                'command_to_first_takeoff_resend_sec': None if first_takeoff_resend is None else first_takeoff_resend - start,
+                'command_to_first_actuator_change_sec': actuator_latency.get('wall_sec'),
+                'command_to_first_motion_sec': motion_latency.get('wall_sec'),
+                'command_to_first_altitude_increase_sec': None if altitude_increase is None else altitude_increase - start,
+                'command_to_altitude_0_2_sec': None if altitude_0_2 is None else altitude_0_2 - start,
+                'command_to_altitude_1_0_sec': None if altitude_1_0 is None else altitude_1_0 - start,
+                'target_altitude_m': target_altitude,
+                'max_yaw_delta_before_0_2_deg': math.degrees(max_yaw_delta),
+                'max_yaw_rate_before_0_2_rad_s': yaw_rate_stats['max_abs_rad_s'],
+                'time_in_takeoff_sec': hlc_durations.get('Takeoff', 0.0),
+                'time_in_gaining_altitude_sec': hlc_durations.get('GainingAltitude', 0.0),
+                'reached_performing_mission': reached_performing_mission,
+                'reached_airborne': reached_airborne,
+                'hlc_state_sequence': '|'.join(hlc_sequence),
+                'mc_state_sequence': '|'.join(mc_sequence),
+                'warning_count': len(warnings),
+                'last_warning_text': last_warning,
+            }
+            windows.append(window)
+        return windows
+
+    def _land_windows(self, drone_id: str) -> list[dict[str, Any]]:
+        commands = [row for row in self._operator_commands(drone_id) if row['payload'].get('op_com_name') == 'land']
+        operator_commands = self._operator_commands(drone_id)
+        windows = []
+        for index, command in enumerate(commands, start=1):
+            start = command['wall_time_epoch_sec']
+            end = self._window_end_time(drone_id, start, operator_commands)
+            standby = self._first_event_time(
+                [row for row in self._rows_for_drone(self.ros_events, drone_id) if row.get('wall_time_epoch_sec') and start <= row['wall_time_epoch_sec'] <= end],
+                lambda row: row.get('event_type') == 'mission_control_state' and row['payload'].get('mc_state_name') == 'Standby',
+            )
+            windows.append(
+                {
+                    'drone_id': drone_id,
+                    'window_index': index,
+                    'window_type': 'land_attempt',
+                    'command_name': 'land',
+                    'start_wall_time_sec': start,
+                    'end_wall_time_sec': end,
+                    'outcome': 'success' if standby is not None else 'incomplete',
+                    'command_to_standby_sec': None if standby is None else standby - start,
+                }
+            )
+        return windows
+
+    def _rtl_windows(self, drone_id: str) -> list[dict[str, Any]]:
+        commands = [row for row in self._operator_commands(drone_id) if row['payload'].get('op_com_name') == 'gohome']
+        operator_commands = self._operator_commands(drone_id)
+        windows = []
+        for index, command in enumerate(commands, start=1):
+            start = command['wall_time_epoch_sec']
+            end = self._window_end_time(drone_id, start, operator_commands)
+            rtl = self._first_event_time(
+                [row for row in self._rows_for_drone(self.ros_events, drone_id) if row.get('wall_time_epoch_sec') and start <= row['wall_time_epoch_sec'] <= end],
+                lambda row: (
+                    row.get('event_type') == 'mission_control_state' and row['payload'].get('mc_state_name') == 'ReturnToLaunch'
+                ) or (
+                    row.get('event_type') == 'high_level_control_state' and row['payload'].get('hlc_state_name') == 'ReturnToLaunch'
+                ),
+            )
+            windows.append(
+                {
+                    'drone_id': drone_id,
+                    'window_index': index,
+                    'window_type': 'rtl_attempt',
+                    'command_name': 'gohome',
+                    'start_wall_time_sec': start,
+                    'end_wall_time_sec': end,
+                    'outcome': 'success' if rtl is not None else 'incomplete',
+                    'command_to_rtl_state_sec': None if rtl is None else rtl - start,
+                }
+            )
+        return windows
+
+    def _velocity_windows(self, drone_id: str, operator_commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = [
+            row for row in self._rows_for_drone(self.component_events, drone_id)
+            if row.get('event_type') == 'velocity_command_published'
+        ]
+        windows = []
+        for index, row in enumerate(rows, start=1):
+            start = row.get('wall_time_epoch_sec')
+            if start is None:
+                continue
+            end = self._window_end_time(drone_id, start, operator_commands)
+            payload = row.get('payload', {})
+            label = payload.get('label', 'velocity')
+            windows.append(
+                {
+                    'drone_id': drone_id,
+                    'window_index': index,
+                    'window_type': 'velocity_window',
+                    'command_name': label,
+                    'start_wall_time_sec': start,
+                    'end_wall_time_sec': end,
+                    'outcome': 'captured',
+                    'command_to_first_actuator_change_sec': self._first_servo_change_latency(drone_id, start).get('wall_sec'),
+                    'command_to_first_motion_sec': self._first_motion_latency(drone_id, start).get('wall_sec'),
+                }
+            )
+        return windows
+
+    def _build_control_events(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in self.ros_events:
+            if row.get('event_type') not in {
+                'input_operator_command',
+                'input_velocity',
+                'mission_control_state',
+                'high_level_control_state',
+                'hlc_telemetry',
+                'platform_error',
+            }:
+                continue
+            wall = row.get('wall_time_epoch_sec')
+            if wall is None:
+                continue
+            rows.append(
+                {
+                    'wall_time_epoch_sec': wall,
+                    'sim_time_sec': self.sim_time.at(wall),
+                    'drone_id': row.get('drone_id', ''),
+                    'source': 'ros',
+                    'component': 'ros',
+                    'event_type': row.get('event_type', ''),
+                    'summary': row.get('event_type', ''),
+                    'payload_json': json.dumps(row.get('payload', {}), separators=(',', ':')),
+                }
+            )
+        for row in self.component_events:
+            if row.get('component') not in CONTROL_COMPONENTS:
+                continue
+            wall = row.get('wall_time_epoch_sec')
+            if wall is None:
+                continue
+            rows.append(
+                {
+                    'wall_time_epoch_sec': wall,
+                    'sim_time_sec': self.sim_time.at(wall),
+                    'drone_id': row.get('drone_id', ''),
+                    'source': 'component',
+                    'component': row.get('component', ''),
+                    'event_type': row.get('event_type', ''),
+                    'summary': f"{row.get('component','')}:{row.get('event_type','')}",
+                    'payload_json': row.get('payload_json', '{}'),
+                }
+            )
+        for drone in self.manifest.get('drones', []):
+            drone_id = drone['id']
+            for row in self._heartbeat_rows(drone_id):
+                wall = row.get('host_time_sec')
+                if wall is None:
+                    continue
+                payload = {
+                    'armed': row.get('armed'),
+                    'mode_string': row.get('mode_string', ''),
+                    'system_status': row.get('system_status'),
+                }
+                rows.append(
+                    {
+                        'wall_time_epoch_sec': wall,
+                        'sim_time_sec': self.sim_time.at(wall),
+                        'drone_id': drone_id,
+                        'source': 'mavlink',
+                        'component': 'heartbeat',
+                        'event_type': 'heartbeat',
+                        'summary': row.get('mode_string', ''),
+                        'payload_json': json.dumps(payload, separators=(',', ':')),
+                    }
+                )
+            for row in self._statustext_rows(drone_id):
+                wall = row.get('host_time_sec')
+                if wall is None:
+                    continue
+                payload = {
+                    'severity': row.get('severity'),
+                    'text': row.get('text', ''),
+                }
+                rows.append(
+                    {
+                        'wall_time_epoch_sec': wall,
+                        'sim_time_sec': self.sim_time.at(wall),
+                        'drone_id': drone_id,
+                        'source': 'mavlink',
+                        'component': 'statustext',
+                        'event_type': 'statustext',
+                        'summary': row.get('text', ''),
+                        'payload_json': json.dumps(payload, separators=(',', ':')),
+                    }
+                )
+        rows.sort(key=lambda row: (row['wall_time_epoch_sec'] or 0.0, row['drone_id'], row['event_type']))
+        write_csv_rows(
+            self.control_events_path,
+            ['wall_time_epoch_sec', 'sim_time_sec', 'drone_id', 'source', 'component', 'event_type', 'summary', 'payload_json'],
+            rows,
+        )
+        return rows
+
+    def _build_control_windows(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        control_windows: list[dict[str, Any]] = []
+        summary: dict[str, Any] = {
+            'run_id': self.manifest.get('run_id'),
+            'mode': self.manifest.get('mode'),
+            'control_focus': 'takeoff',
+            'drones': {},
+        }
+        for drone in self.manifest.get('drones', []):
+            drone_id = drone['id']
+            operator_commands = self._operator_commands(drone_id)
+            takeoff_windows = self._takeoff_windows(drone_id)
+            land_windows = self._land_windows(drone_id)
+            rtl_windows = self._rtl_windows(drone_id)
+            velocity_windows = self._velocity_windows(drone_id, operator_commands)
+            control_windows.extend(takeoff_windows)
+            control_windows.extend(land_windows)
+            control_windows.extend(rtl_windows)
+            control_windows.extend(velocity_windows)
+            summary['drones'][drone_id] = {
+                'takeoff_windows': takeoff_windows,
+                'land_windows': land_windows,
+                'rtl_windows': rtl_windows,
+                'velocity_windows': velocity_windows,
+                'latest_takeoff': takeoff_windows[-1] if takeoff_windows else None,
+                'latest_land': land_windows[-1] if land_windows else None,
+                'latest_rtl': rtl_windows[-1] if rtl_windows else None,
+                'latest_velocity': velocity_windows[-1] if velocity_windows else None,
+            }
+        write_csv_rows(
+            self.control_windows_path,
+            [
+                'drone_id',
+                'window_index',
+                'window_type',
+                'command_name',
+                'start_wall_time_sec',
+                'end_wall_time_sec',
+                'outcome',
+                'command_to_mc_transition_sec',
+                'command_to_hlc_takeoff_sec',
+                'command_to_first_armed_sec',
+                'command_to_first_takeoff_resend_sec',
+                'command_to_first_actuator_change_sec',
+                'command_to_first_motion_sec',
+                'command_to_first_altitude_increase_sec',
+                'command_to_altitude_0_2_sec',
+                'command_to_altitude_1_0_sec',
+                'target_altitude_m',
+                'max_yaw_delta_before_0_2_deg',
+                'max_yaw_rate_before_0_2_rad_s',
+                'time_in_takeoff_sec',
+                'time_in_gaining_altitude_sec',
+                'reached_performing_mission',
+                'reached_airborne',
+                'hlc_state_sequence',
+                'mc_state_sequence',
+                'warning_count',
+                'last_warning_text',
+                'command_to_standby_sec',
+                'command_to_rtl_state_sec',
+            ],
+            control_windows,
+        )
+        self.control_summary_path.write_text(json.dumps(summary, indent=2) + '\n')
+        self.control_summary_md_path.write_text(self._render_control_markdown(summary))
+        return control_windows, summary
+
+    def _bottlenecks(self, summary: dict[str, Any], control_summary: dict[str, Any]) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         world_rtf = summary.get('world', {}).get('real_time_factor', {}).get('median')
         if world_rtf is not None and world_rtf < 0.7:
@@ -470,15 +1189,20 @@ class ProfileAnalyzer:
             cpu_peak = container_summary.get('cpu_percent', {}).get('max')
             if cpu_peak is not None and cpu_peak > 150.0:
                 findings.append({'priority': 4, 'title': f'High container CPU pressure ({container_name})', 'detail': f'peak cpu={cpu_peak:.1f}%'})
-        for drone_id, drone_summary in summary.get('drones', {}).items():
-            motion_latency = drone_summary.get('command_to_first_motion_latency', {}).get('wall_sec')
-            if motion_latency is not None and motion_latency > 2.0:
-                findings.append({'priority': 5, 'title': f'Slow command-to-motion response ({drone_id})', 'detail': f'wall latency={motion_latency:.3f}s'})
+        for drone_id, drone_summary in control_summary.get('drones', {}).items():
+            latest_takeoff = drone_summary.get('latest_takeoff')
+            if not latest_takeoff:
+                continue
+            outcome = latest_takeoff.get('outcome')
+            if outcome != 'success_climb':
+                findings.append({'priority': 5, 'title': f'Takeoff control anomaly ({drone_id})', 'detail': f'outcome={outcome}'})
         findings.sort(key=lambda row: (row['priority'], row['title']))
         return findings
 
     def analyze(self) -> dict[str, Any]:
         drone_ids = [drone['id'] for drone in self.manifest.get('drones', [])]
+        self._build_control_events()
+        _control_windows, control_summary = self._build_control_windows()
         summary = {
             'run_id': self.manifest.get('run_id'),
             'mode': self.manifest.get('mode'),
@@ -490,13 +1214,20 @@ class ProfileAnalyzer:
             'containers': self._container_summary(),
             'gpu': self._gpu_summary(),
             'focus_event_count': len(self.focus_rows),
+            'control': {
+                'summary_file': str(self.control_summary_path.relative_to(self.run_dir)),
+                'latest_takeoff_outcomes': {
+                    drone_id: (control_summary['drones'][drone_id]['latest_takeoff'] or {}).get('outcome')
+                    for drone_id in drone_ids
+                },
+            },
         }
-        summary['bottlenecks'] = self._bottlenecks(summary)
+        summary['bottlenecks'] = self._bottlenecks(summary, control_summary)
         self.summary_path.write_text(json.dumps(summary, indent=2) + '\n')
-        self.summary_md_path.write_text(self._render_markdown(summary))
+        self.summary_md_path.write_text(self._render_markdown(summary, control_summary))
         return summary
 
-    def _render_markdown(self, summary: dict[str, Any]) -> str:
+    def _render_markdown(self, summary: dict[str, Any], control_summary: dict[str, Any]) -> str:
         lines = ['# Stack Profile Summary', '', f"Run: `{summary.get('run_id', '')}`", f"Mode: `{summary.get('mode', '')}`", '']
         lines.append('## Bottlenecks')
         if summary['bottlenecks']:
@@ -524,11 +1255,43 @@ class ProfileAnalyzer:
             lines.append(f"- `{drone_id}` takeoff/landing={drone_summary['takeoff_duration_to_altitude_threshold'].get('wall_sec')} / {drone_summary['landing_duration_to_standby'].get('wall_sec')} s")
             lines.append(f"- `{drone_id}` pose backlog p95={drone_summary['pose']['pose_backlog_sec'].get('p95')}")
         lines.append('')
+        lines.append('## Control Snapshot')
+        for drone_id, drone_summary in control_summary.get('drones', {}).items():
+            latest_takeoff = drone_summary.get('latest_takeoff')
+            if not latest_takeoff:
+                lines.append(f"- `{drone_id}` no takeoff window captured")
+                continue
+            lines.append(
+                f"- `{drone_id}` takeoff outcome={latest_takeoff.get('outcome')} arm={latest_takeoff.get('command_to_first_armed_sec')}s alt0.2={latest_takeoff.get('command_to_altitude_0_2_sec')}s alt1.0={latest_takeoff.get('command_to_altitude_1_0_sec')}s yaw_delta={latest_takeoff.get('max_yaw_delta_before_0_2_deg')}deg"
+            )
+            if latest_takeoff.get('last_warning_text'):
+                lines.append(f"- `{drone_id}` last warning: {latest_takeoff.get('last_warning_text')}")
+        lines.append('')
         lines.append('## GPU')
         lines.append(
             f"- GPU util peak={summary.get('gpu', {}).get('utilization_gpu_percent', {}).get('max')} memory peak MiB={summary.get('gpu', {}).get('memory_used_mib', {}).get('max')}"
         )
         lines.append('')
+        return '\n'.join(lines) + '\n'
+
+    def _render_control_markdown(self, summary: dict[str, Any]) -> str:
+        lines = ['# Control Trace Summary', '', f"Run: `{summary.get('run_id', '')}`", f"Mode: `{summary.get('mode', '')}`", '']
+        for drone_id, drone_summary in summary.get('drones', {}).items():
+            lines.append(f'## {drone_id}')
+            latest_takeoff = drone_summary.get('latest_takeoff')
+            if latest_takeoff:
+                lines.append(f"- Takeoff outcome: `{latest_takeoff.get('outcome')}`")
+                lines.append(f"- Command -> MC/HLC takeoff: `{latest_takeoff.get('command_to_mc_transition_sec')}` / `{latest_takeoff.get('command_to_hlc_takeoff_sec')}` s")
+                lines.append(f"- Command -> armed / actuator / altitude0.2 / altitude1.0: `{latest_takeoff.get('command_to_first_armed_sec')}` / `{latest_takeoff.get('command_to_first_actuator_change_sec')}` / `{latest_takeoff.get('command_to_altitude_0_2_sec')}` / `{latest_takeoff.get('command_to_altitude_1_0_sec')}` s")
+                lines.append(f"- Max yaw delta before liftoff: `{latest_takeoff.get('max_yaw_delta_before_0_2_deg')}` deg")
+                lines.append(f"- Max yaw rate before liftoff: `{latest_takeoff.get('max_yaw_rate_before_0_2_rad_s')}` rad/s")
+                lines.append(f"- HLC sequence: `{latest_takeoff.get('hlc_state_sequence')}`")
+                lines.append(f"- MC sequence: `{latest_takeoff.get('mc_state_sequence')}`")
+                if latest_takeoff.get('last_warning_text'):
+                    lines.append(f"- Last warning: {latest_takeoff.get('last_warning_text')}")
+            else:
+                lines.append('- No takeoff window captured.')
+            lines.append('')
         return '\n'.join(lines) + '\n'
 
 

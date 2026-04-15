@@ -150,14 +150,14 @@ start_profile_supervisor() {
     --container "${STACK_NAME}-profile-ros"
   )
   local endpoint_args=()
-  local drone_id sitl_host mavlink_port
+  local drone_id sitl_host mavlink_port mavlink_aux_port
   local profile_supervisor_log="${run_logs_dir}/profile-supervisor.log"
 
   if [ "${profile_enabled}" != '1' ]; then
     return 0
   fi
 
-  while IFS=$'\t' read -r drone_id _namespace sitl_host _runtime_model_name _serial0_port mavlink_port _mavlink_aux_port _fdm_port_in _fdm_port_out _proxy_name _proxy_sub _proxy_pub _proxy_log _chase_topic _camera_topic _alate_rel _ros_alate_rel _ros_nemala_rel; do
+  while IFS=$'\t' read -r drone_id _namespace sitl_host _runtime_model_name _serial0_port mavlink_port mavlink_aux_port _fdm_port_in _fdm_port_out _proxy_name _proxy_sub _proxy_pub _proxy_log _chase_topic _camera_topic _alate_rel _ros_alate_rel _ros_nemala_rel; do
     [ -n "${drone_id}" ] || continue
     container_args+=( --container "${STACK_NAME}-${drone_id}-sitl" )
     container_args+=( --container "${STACK_NAME}-${drone_id}-proxy" )
@@ -166,7 +166,7 @@ start_profile_supervisor() {
     container_args+=( --container "${STACK_NAME}-${drone_id}-hlc" )
     container_args+=( --container "${STACK_NAME}-${drone_id}-ros-alate" )
     container_args+=( --container "${STACK_NAME}-${drone_id}-ros-nemala" )
-    endpoint_args+=( --drone-endpoint "${drone_id}=tcp:${sitl_host}:${mavlink_port}" )
+    endpoint_args+=( --drone-endpoint "${drone_id}=tcp:${sitl_host}:${mavlink_aux_port}" )
   done <"${visual_assets_dir}/drones.tsv"
 
   python3 "${ROOT_DIR}/scripts/build_stack_profile_manifest.py" \
