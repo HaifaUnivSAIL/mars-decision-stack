@@ -5,7 +5,7 @@
     "alate_profile": "config/alate/uav.visual.sitl.json",
     "ros_alate_profile": "config/ros_alate/adapter.yaml",
     "ros_nemala_profile": "config/ros_nemala/node_manager.yaml",
-    "runtime_profile": "fleet_visual_optimized"
+    "runtime_profile": "fleet_control_stable"
   },
   "drones": [
     {

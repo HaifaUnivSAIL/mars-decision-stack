@@ -20,7 +20,7 @@ Behavior:
   - With --count N, generate a fleet manifest for N drones, start the visual swarm,
     and prepare per-drone keyboard teleop params automatically.
   - Count-based bringup defaults to runtime profile single_equivalent for N=1 and
-    fleet_visual_optimized for N>1 unless --runtime-profile is provided.
+    fleet_control_stable for N>1 unless --runtime-profile is provided.
   - With --drone ID, attach a keyboard teleop session to the selected drone in the
     currently running swarm stack.
   - With both --count and --drone, start the swarm first and then attach to that drone.
@@ -115,7 +115,7 @@ if [ -z "${runtime_profile}" ] && [ -n "${count}" ]; then
   if [ "${count}" -eq 1 ]; then
     runtime_profile="single_equivalent"
   else
-    runtime_profile="fleet_visual_optimized"
+    runtime_profile="fleet_control_stable"
   fi
 fi
 

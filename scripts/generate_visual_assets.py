@@ -14,6 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from runtime_profiles import resolve_runtime_defaults
 from vehicle_slice import build_single_vehicle_slice, render_alate_config, render_ros_alate_config, render_ros_nemala_config
 
 BASE_RUNTIME_MODEL_NAME = "iris_with_camera"
@@ -233,7 +234,14 @@ def build_model_config(model_name: str, mode: str) -> str:
     return MODEL_CONFIG_TEMPLATE.format(display_name=display_name, description=description)
 
 
-def generate_runtime_model(source_model: Path, mode: str, pose: dict[str, float], runtime_model_name: str) -> ET.ElementTree:
+def generate_runtime_model(
+    source_model: Path,
+    mode: str,
+    pose: dict[str, float],
+    runtime_model_name: str,
+    runtime_defaults: dict[str, object],
+    drone: dict,
+) -> ET.ElementTree:
     tree = load_xml(source_model)
     root = tree.getroot()
     set_model_name(root, runtime_model_name)
@@ -269,10 +277,32 @@ def generate_runtime_model(source_model: Path, mode: str, pose: dict[str, float]
             if joint.find("pose") is not None:
                 joint.find("pose").text = format_pose((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
+    ardupilot_plugin = root.find('.//plugin[@name="ArduPilotPlugin"]')
+    if ardupilot_plugin is not None:
+        fdm_port_in = ardupilot_plugin.find("fdm_port_in")
+        if fdm_port_in is None:
+            fdm_port_in = ET.SubElement(ardupilot_plugin, "fdm_port_in")
+        fdm_port_in.text = str(drone["fdm_port_in"])
+
+        fdm_exchange = dict(runtime_defaults.get("fdm_exchange", {}))
+        for element_name in ("offline_recv_timeout_ms", "online_recv_timeout_ms"):
+            value = fdm_exchange.get(element_name)
+            if value is None:
+                continue
+            element = ardupilot_plugin.find(element_name)
+            if element is None:
+                element = ET.SubElement(ardupilot_plugin, element_name)
+            element.text = str(int(value))
+
     return tree
 
 
-def generate_runtime_world(template_path: Path, runtime_model_name: str, mode: str) -> ET.ElementTree:
+def generate_runtime_world(
+    template_path: Path,
+    runtime_model_name: str,
+    mode: str,
+    runtime_defaults: dict[str, object],
+) -> ET.ElementTree:
     tree = load_xml(template_path)
     root = tree.getroot()
 
@@ -296,6 +326,15 @@ def generate_runtime_world(template_path: Path, runtime_model_name: str, mode: s
             model_name = ET.SubElement(plugin, "model_name")
         model_name.text = runtime_model_name
 
+    physics = root.find(".//physics")
+    if physics is not None:
+        max_step_size = physics.find("max_step_size")
+        if max_step_size is not None:
+            max_step_size.text = f"{float(runtime_defaults['physics']['max_step_size']):.6f}"
+        real_time_factor = physics.find("real_time_factor")
+        if real_time_factor is not None:
+            real_time_factor.text = f"{float(runtime_defaults['physics']['real_time_factor']):.6f}"
+
     return tree
 
 
@@ -307,6 +346,7 @@ def emit_manifest(
     world_filename: str,
     pose: dict[str, float],
     drone: dict,
+    runtime_defaults: dict[str, object],
 ) -> None:
     active_topics = {
         "deployed": "/mars/visual/deployed_camera",
@@ -318,9 +358,12 @@ def emit_manifest(
         "fleet": False,
         "runtime_model_name": runtime_model_name,
         "runtime_model_uri": f"model://{runtime_model_name}",
+        "runtime_profile": "single_equivalent",
         "runtime_world_name": "mars_iris_dual_view",
         "runtime_world_relative_path": f"worlds/{world_filename}",
         "runtime_model_relative_path": f"models/{runtime_model_name}/model.sdf",
+        "physics": runtime_defaults["physics"],
+        "fdm_exchange": runtime_defaults.get("fdm_exchange", {}),
         "camera_topic": active_topics["deployed"],
         "chase_topic": active_topics["chase"],
         "active_topics": active_topics,
@@ -442,6 +485,7 @@ def emit_manifest(
 def main() -> int:
     args = parse_args()
     root_dir = Path(__file__).resolve().parents[1]
+    runtime_defaults = resolve_runtime_defaults("single_equivalent")
     pose = load_pose(args.config)
     if args.mode == "calib":
         validate_calibration_pose(pose)
@@ -457,15 +501,6 @@ def main() -> int:
     model_dir = model_dir_root / runtime_model_name
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    model_tree = generate_runtime_model(args.source_model, args.mode, pose, runtime_model_name)
-    write_xml(model_tree, model_dir / "model.sdf")
-    (model_dir / "model.config").write_text(build_model_config(runtime_model_name, args.mode))
-
-    world_template = args.experiment_world_template if args.mode == "experiment" else args.calibration_world_template
-    world_tree = generate_runtime_world(world_template, runtime_model_name, args.mode)
-    world_filename = f"mars_iris_dual_view.{args.mode}.{safe_slug(args.run_id)}.sdf"
-    write_xml(world_tree, world_dir_root / world_filename)
-
     drone = build_single_vehicle_slice(
         reference_path=args.config,
         root_dir=root_dir,
@@ -475,11 +510,21 @@ def main() -> int:
         ros_nemala_profile="config/ros_nemala/node_manager.yaml",
     )
     drone["runtime_model_name"] = runtime_model_name
+
+    model_tree = generate_runtime_model(args.source_model, args.mode, pose, runtime_model_name, runtime_defaults, drone)
+    write_xml(model_tree, model_dir / "model.sdf")
+    (model_dir / "model.config").write_text(build_model_config(runtime_model_name, args.mode))
+
+    world_template = args.experiment_world_template if args.mode == "experiment" else args.calibration_world_template
+    world_tree = generate_runtime_world(world_template, runtime_model_name, args.mode, runtime_defaults)
+    world_filename = f"mars_iris_dual_view.{args.mode}.{safe_slug(args.run_id)}.sdf"
+    write_xml(world_tree, world_dir_root / world_filename)
+
     render_alate_config(drone, runtime_dir_root / "uav.visual.sitl.json")
     render_ros_alate_config(drone, runtime_dir_root / "ros_alate.adapter.yaml")
     render_ros_nemala_config(drone, runtime_dir_root / "ros_nemala.node_manager.yaml")
 
-    emit_manifest(output_dir, args.mode, args.run_id, runtime_model_name, world_filename, pose, drone)
+    emit_manifest(output_dir, args.mode, args.run_id, runtime_model_name, world_filename, pose, drone, runtime_defaults)
     return 0
 
 

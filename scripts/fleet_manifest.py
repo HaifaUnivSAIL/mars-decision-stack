@@ -54,7 +54,7 @@ def load_fleet_definition(manifest_path: Path, root_dir: Path) -> dict[str, Any]
     )
 
     runtime_overrides: dict[str, Any] = {}
-    for key in ("camera_streams", "rendering", "physics", "sensor_behavior"):
+    for key in ("fdm_exchange", "camera_streams", "rendering", "physics", "sensor_behavior"):
         if key in raw_defaults:
             runtime_overrides[key] = raw_defaults.pop(key)
 
@@ -101,6 +101,7 @@ def load_fleet_definition(manifest_path: Path, root_dir: Path) -> dict[str, Any]
         "camera_streams": defaults["camera_streams"],
         "rendering": defaults["rendering"],
         "physics": defaults["physics"],
+        "fdm_exchange": defaults["fdm_exchange"],
         "sensor_behavior": defaults["sensor_behavior"],
         "world_name": WORLD_NAME,
         "active_topics": {
@@ -133,6 +134,7 @@ def build_runtime_fleet(manifest_path: Path, root_dir: Path, run_id: str) -> dic
         "mode": "experiment",
         "runtime_world_name": WORLD_NAME,
         "runtime_profile": definition["runtime_profile"],
+        "fdm_exchange": definition["fdm_exchange"],
         "sensor_behavior": definition["sensor_behavior"],
         "drones": runtime_drones,
     }

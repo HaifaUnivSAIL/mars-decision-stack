@@ -7,6 +7,10 @@ from typing import Any
 
 
 BASE_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "fdm_exchange": {
+        "offline_recv_timeout_ms": 1,
+        "online_recv_timeout_ms": 10,
+    },
     "camera_streams": {
         "deployed": {
             "width": 640,
@@ -43,7 +47,41 @@ BASE_RUNTIME_DEFAULTS: dict[str, Any] = {
 
 RUNTIME_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "single_equivalent": {},
+    "fleet_control_stable": {
+        "fdm_exchange": {
+            "online_recv_timeout_ms": 1,
+        },
+        "camera_streams": {
+            "chase": {
+                "width": 960,
+                "height": 540,
+                "update_rate_hz": 15.0,
+            },
+        },
+        "rendering": {
+            "sun_cast_shadows": False,
+        },
+        "physics": {
+            "max_step_size": 0.005,
+            "real_time_factor": 1.0,
+        },
+        "sensor_behavior": {
+            "deployed": {
+                "visualize": False,
+                "always_on": False,
+                "remove_plugins": ["CameraZoomPlugin", "GstCameraPlugin"],
+            },
+            "chase": {
+                "visualize": False,
+                "always_on": False,
+                "remove_plugins": [],
+            },
+        },
+    },
     "fleet_visual_optimized": {
+        "fdm_exchange": {
+            "online_recv_timeout_ms": 1,
+        },
         "camera_streams": {
             "chase": {
                 "width": 960,
@@ -75,7 +113,7 @@ RUNTIME_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 
 
 def default_runtime_profile(drone_count: int) -> str:
-    return "single_equivalent" if int(drone_count) <= 1 else "fleet_visual_optimized"
+    return "single_equivalent" if int(drone_count) <= 1 else "fleet_control_stable"
 
 
 def deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -98,4 +136,3 @@ def resolve_runtime_defaults(profile_name: str, overrides: dict[str, Any] | None
     if overrides:
         resolved = deep_merge(resolved, overrides)
     return resolved
-

@@ -551,6 +551,13 @@ visual_args=(
   -v "${current_run_dir}:${current_run_mount}:rw"
 )
 
+if [ "${profile_enabled}" = '1' ]; then
+  visual_args+=(
+    -e STACK_PROFILE=1
+    -e "STACK_PROFILE_RUN_DIR=${current_run_mount}"
+  )
+fi
+
 if [ "${visual_gui}" = '1' ]; then
   if [ -z "${DISPLAY:-}" ]; then
     printf 'DISPLAY is not set. Export DISPLAY or run VISUAL_GUI=0 ./scripts/run_visual_stack.sh for headless validation.\n' >&2

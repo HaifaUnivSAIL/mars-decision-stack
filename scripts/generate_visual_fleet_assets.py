@@ -320,6 +320,16 @@ def generate_runtime_model(source_model: Path, drone: dict, runtime_fleet: dict)
     if fdm_port_in is None:
         fdm_port_in = ET.SubElement(ardupilot_plugin, "fdm_port_in")
     fdm_port_in.text = str(drone["fdm_port_in"])
+
+    fdm_exchange = runtime_fleet.get("fdm_exchange", {})
+    for element_name in ("offline_recv_timeout_ms", "online_recv_timeout_ms"):
+        value = fdm_exchange.get(element_name)
+        if value is None:
+            continue
+        element = ardupilot_plugin.find(element_name)
+        if element is None:
+            element = ET.SubElement(ardupilot_plugin, element_name)
+        element.text = str(int(value))
     return tree
 
 
@@ -393,6 +403,7 @@ def emit_manifest(output_dir: Path, runtime_fleet: dict, world_filename: str) ->
         "manifest_path": runtime_fleet["manifest_path"],
         "runtime_profile": runtime_fleet["runtime_profile"],
         "physics": runtime_fleet["physics"],
+        "fdm_exchange": runtime_fleet.get("fdm_exchange", {}),
         "camera_streams": runtime_fleet["camera_streams"],
         "rendering": runtime_fleet["rendering"],
         "sensor_behavior": runtime_fleet["sensor_behavior"],
