@@ -1,0 +1,35 @@
+scenario_name: formation_smoke
+control_frequency_hz: 10.0
+telemetry_timeout_sec: 2.0
+require_ready_state: true
+ready_hold_sec: 1.5
+auto_takeoff: true
+takeoff_altitude_m: 3.0
+takeoff_timeout_sec: 45.0
+auto_land_after_actions: true
+landing_timeout_sec: 45.0
+landed_altitude_m: 0.3
+
+controller:
+  horizontal_gain: 0.6
+  vertical_gain: 0.7
+  yaw_gain: 0.8
+  max_linear_xy_mps: 0.45
+  max_linear_z_mps: 0.35
+  max_angular_z_rad_s: 0.6
+  position_deadband_m: 0.05
+  vertical_deadband_m: 0.05
+  yaw_deadband_deg: 5.0
+
+actions:
+  - hold: 3.0
+  - translate_world:
+      x: 2.0
+      y: 0.0
+      z: 0.0
+      duration_sec: 8.0
+  - yaw:
+      yaw_deg: 45.0
+      duration_sec: 4.0
+  - hold: 3.0
+  - land: {}

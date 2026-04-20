@@ -277,6 +277,13 @@ def generate_runtime_model(
             if joint.find("pose") is not None:
                 joint.find("pose").text = format_pose((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
+    gst_camera_plugin = root.find('.//plugin[@name="GstCameraPlugin"]')
+    if gst_camera_plugin is not None:
+        udp_port = gst_camera_plugin.find("udp_port")
+        if udp_port is None:
+            udp_port = ET.SubElement(gst_camera_plugin, "udp_port")
+        udp_port.text = str(drone["gst_udp_port"])
+
     ardupilot_plugin = root.find('.//plugin[@name="ArduPilotPlugin"]')
     if ardupilot_plugin is not None:
         fdm_port_in = ardupilot_plugin.find("fdm_port_in")

@@ -590,6 +590,100 @@ def test_analyze_stack_profile_forced_landing_beats_partial_climb(tmp_path: Path
     assert control_summary['drones']['drone_1']['latest_takeoff']['outcome'] == 'forced_land_after_takeoff_timeout'
 
 
+def test_analyze_stack_profile_summarizes_swarm_controller_metrics(tmp_path: Path) -> None:
+    run_dir = make_run(
+        tmp_path,
+        'fleet-swarm-controller-run',
+        'fleet',
+        {
+            'drone_1': success_drone_fixture('drone_1'),
+            'drone_2': success_drone_fixture('drone_2'),
+        },
+        rtf=0.96,
+        backlog=0.2,
+        cpu_peak=110.0,
+    )
+    analysis_dir = run_dir / 'analysis' / 'swarm_experiment_fixture'
+    append_profile_log(
+        analysis_dir / 'swarm_scenario_node.log',
+        [
+            {'component': 'swarm_scenario', 'event_type': 'scenario_phase_entered', 'wall_time_epoch_sec': 1.5, 'phase': 'waiting_ready', 'scenario_name': 'formation_smoke'},
+            {'component': 'swarm_scenario', 'event_type': 'scenario_phase_entered', 'wall_time_epoch_sec': 2.0, 'phase': 'waiting_airborne', 'scenario_name': 'formation_smoke'},
+            {'component': 'swarm_scenario', 'event_type': 'group_takeoff_completed', 'wall_time_epoch_sec': 5.0, 'scenario_name': 'formation_smoke', 'takeoff_spread_sec': 5.5},
+            {
+                'component': 'swarm_scenario',
+                'event_type': 'swarm_action_completed',
+                'wall_time_epoch_sec': 8.0,
+                'scenario_name': 'formation_smoke',
+                'action_index': 1,
+                'action_kind': 'hold',
+                'label': 'hold 3s',
+                'aggregate_max_horizontal_error_m': 0.4,
+                'aggregate_max_vertical_error_m': 0.1,
+                'aggregate_max_yaw_error_deg': 9.0,
+                'per_drone': {'drone_1': {'max_horizontal_error_m': 0.2}, 'drone_2': {'max_horizontal_error_m': 0.4}},
+            },
+            {
+                'component': 'swarm_scenario',
+                'event_type': 'swarm_action_completed',
+                'wall_time_epoch_sec': 12.0,
+                'scenario_name': 'formation_smoke',
+                'action_index': 2,
+                'action_kind': 'translate_world',
+                'label': 'translate',
+                'aggregate_max_horizontal_error_m': 0.6,
+                'aggregate_max_vertical_error_m': 0.2,
+                'aggregate_max_yaw_error_deg': 12.0,
+                'per_drone': {'drone_1': {'max_horizontal_error_m': 0.3}, 'drone_2': {'max_horizontal_error_m': 0.6}},
+            },
+            {'component': 'swarm_scenario', 'event_type': 'group_abort_triggered', 'wall_time_epoch_sec': 13.0, 'scenario_name': 'formation_smoke', 'reason': 'telemetry_stale', 'drone_id': 'drone_2'},
+            {'component': 'swarm_scenario', 'event_type': 'scenario_finished', 'wall_time_epoch_sec': 14.0, 'scenario_name': 'formation_smoke', 'failed': True, 'total_duration_sec': 11.5},
+        ],
+    )
+
+    readiness_dir = run_dir / 'diagnostics' / 'readiness'
+    readiness_dir.mkdir(parents=True, exist_ok=True)
+    (readiness_dir / 'drone_2.startup_failure.json').write_text(
+        json.dumps(
+            {
+                'drone_id': 'drone_2',
+                'stage': 'pre_hlc_endpoint',
+                'endpoint_report': {'failure_reason': 'no_heartbeat'},
+                'readiness_report': None,
+                'sitl_serial_events': {
+                    'serial1_open_count': 0,
+                    'serial1_close_count': 0,
+                    'serial2_open_count': 1,
+                    'serial2_close_count': 1,
+                },
+                'hlc_markers': {'heartbeat_timeout_count': 2},
+            },
+            indent=2,
+        )
+        + '\n'
+    )
+
+    subprocess.run([sys.executable, str(ANALYZE), '--run-dir', str(run_dir)], check=True)
+
+    profile_dir = run_dir / 'diagnostics' / 'profile'
+    summary = json.loads((profile_dir / 'summary.json').read_text())
+    control_summary = json.loads((profile_dir / 'control_summary.json').read_text())
+    control_md = (profile_dir / 'control_summary.md').read_text()
+
+    assert summary['swarm']['scenario_name'] == 'formation_smoke'
+    assert summary['swarm']['group_takeoff_spread_sec'] == 5.5
+    assert summary['swarm']['hold_error']['max_horizontal_m'] == 0.4
+    assert summary['swarm']['translation_error']['max_horizontal_m'] == 0.6
+    assert summary['swarm']['abort']['reason'] == 'telemetry_stale'
+    assert summary['startup']['drones']['drone_2']['startup_failure_stage'] == 'pre_hlc_endpoint'
+    assert control_summary['swarm']['abort']['drone_id'] == 'drone_2'
+    assert any(item['title'] == 'Swarm controller abort' for item in summary['bottlenecks'])
+    assert any(item['title'] == 'Formation hold error exceeds gate' for item in summary['bottlenecks'])
+    assert any(item['title'] == 'Formation translation error exceeds gate' for item in summary['bottlenecks'])
+    assert any(item['title'] == 'Fleet startup failure (drone_2)' for item in summary['bottlenecks'])
+    assert '## Swarm' in control_md
+
+
 def test_compare_stack_profiles_includes_control_section(tmp_path: Path) -> None:
     baseline = make_run(
         tmp_path,

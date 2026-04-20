@@ -64,6 +64,18 @@ def load_fleet_definition(manifest_path: Path, root_dir: Path) -> dict[str, Any]
     defaults_ports.update(defaults.get("ports", {}))
     defaults["ports"] = defaults_ports
     defaults.update(resolve_runtime_defaults(runtime_profile, runtime_overrides))
+    explicit_online_recv_timeout = (
+        isinstance(runtime_overrides.get("fdm_exchange"), dict)
+        and "online_recv_timeout_ms" in runtime_overrides["fdm_exchange"]
+    )
+    if len(drones_raw) > 1 and not explicit_online_recv_timeout:
+        # Multi-drone Gazebo runs can accumulate blocking socket waits in the
+        # ArduPilot plugin and collapse the world real-time factor. Keep the
+        # fleet otherwise single-equivalent, but clamp the online wait budget
+        # to a fleet-safe value unless the manifest explicitly overrides it.
+        fdm_exchange = dict(defaults.get("fdm_exchange", {}))
+        fdm_exchange["online_recv_timeout_ms"] = 1
+        defaults["fdm_exchange"] = fdm_exchange
     defaults["runtime_profile"] = runtime_profile
 
     seen_ids: set[str] = set()

@@ -397,6 +397,86 @@ PY
     "${timeout_sec}" >/dev/null
 }
 
+run_pre_hlc_mavlink_probe() {
+  local drone_id="$1"
+  local sitl_host="$2"
+  local mavlink_aux_port="$3"
+  local timeout_sec="${4:-60}"
+  local report_mount="${current_run_mount}/diagnostics/readiness/${drone_id}.pre_hlc_endpoint.json"
+
+  docker run --rm \
+    --network "${NETWORK}" \
+    -v "${ROOT_DIR}:/workspace/root:ro" \
+    -v "${current_run_dir}:${current_run_mount}:rw" \
+    --entrypoint python3 \
+    "${IMAGE}" \
+    /workspace/root/scripts/sitl_endpoint_readiness.py \
+    --endpoint "tcp:${sitl_host}:${mavlink_aux_port}" \
+    --timeout-sec "${timeout_sec}" \
+    --min-heartbeats 3 \
+    --max-gap-sec 2.0 \
+    --settle-window-sec 3.0 \
+    --report "${report_mount}"
+}
+
+pre_hlc_probe_failure_reason() {
+  local report_path="$1"
+  python3 - "$report_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("")
+    raise SystemExit(0)
+try:
+    payload = json.loads(path.read_text())
+except Exception:
+    print("unparseable_report")
+    raise SystemExit(0)
+print(str(payload.get("failure_reason") or ""))
+PY
+}
+
+should_tolerate_pre_hlc_probe_failure() {
+  local report_path="$1"
+  local reason
+  reason="$(pre_hlc_probe_failure_reason "${report_path}")"
+  case "${reason}" in
+    no_heartbeat|insufficient_consecutive_heartbeats|heartbeat_never_stabilized)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+write_drone_startup_failure_report() {
+  local drone_id="$1"
+  local stage="$2"
+  local endpoint_report_path="${3:-}"
+  local readiness_report_path="${4:-}"
+  local report_path="${run_readiness_dir}/${drone_id}.startup_failure.json"
+  local cmd=(
+    python3
+    "${ROOT_DIR}/scripts/fleet_startup_report.py"
+    --run-dir "${current_run_dir}"
+    --drone-id "${drone_id}"
+    --stage "${stage}"
+    --report "${report_path}"
+  )
+  if [ -n "${endpoint_report_path}" ]; then
+    cmd+=( --endpoint-report "${endpoint_report_path}" )
+  fi
+  if [ -n "${readiness_report_path}" ]; then
+    cmd+=( --readiness-report "${readiness_report_path}" )
+  fi
+  "${cmd[@]}" >/dev/null
+  printf 'Startup diagnostics for %s written to %s\n' "${drone_id}" "${report_path}" >&2
+}
+
 set_runtime_master_port() {
   local config_path="$1"
   local sitl_host="$2"
@@ -462,6 +542,10 @@ wait_for_drone_readiness() {
     fi
     if [ $(( $(date +%s) - start_sec )) -ge "${timeout_sec}" ]; then
       printf 'Timed out waiting for readiness of %s.\n' "${drone_id}" >&2
+      write_drone_startup_failure_report \
+        "${drone_id}" \
+        "hlc_mc_readiness" \
+        "${run_readiness_dir}/${drone_id}.pre_hlc_endpoint.json"
       return 1
     fi
     sleep 1
@@ -486,6 +570,11 @@ wait_for_drone_readiness() {
   fi
   if ! "${readiness_cmd[@]}"; then
     printf 'MAVLink readiness check failed for %s. See %s\n' "${drone_id}" "${readiness_report}" >&2
+    write_drone_startup_failure_report \
+      "${drone_id}" \
+      "post_ready_mavlink" \
+      "${run_readiness_dir}/${drone_id}.pre_hlc_endpoint.json" \
+      "${readiness_report}"
     return 1
   fi
   return 0
@@ -646,6 +735,11 @@ if [ -z "${visual_sim_ip}" ]; then
 fi
 
 create_ipc_directories
+start_profile_supervisor
+start_profile_sidecars
+
+resolved_sitl_endpoints_tsv="${run_readiness_dir}/resolved_sitl_endpoints.tsv"
+: >"${resolved_sitl_endpoints_tsv}"
 
 while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_port mavlink_port mavlink_aux_port fdm_port_in fdm_port_out proxy_name proxy_sub proxy_pub proxy_log chase_topic camera_topic alate_rel ros_alate_rel ros_nemala_rel; do
   [ -n "${drone_id}" ] || continue
@@ -679,23 +773,51 @@ while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_
 
   # Fleet mode uses SERIAL1 as the deterministic DroneKit endpoint.
   resolved_mavlink_port="${mavlink_port}"
+  resolved_mavlink_aux_port="${mavlink_aux_port}"
   wait_for_drone_tcp_port "${sitl_runtime_host}" "${resolved_mavlink_port}" 60
+  wait_for_drone_tcp_port "${sitl_runtime_host}" "${resolved_mavlink_aux_port}" 60
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${drone_id}" \
+    "${namespace}" \
+    "${sitl_host}" \
+    "${runtime_model_name}" \
+    "${serial0_port}" \
+    "${resolved_mavlink_port}" \
+    "${resolved_mavlink_aux_port}" \
+    "${fdm_port_in}" \
+    "${fdm_port_out}" \
+    "${proxy_name}" \
+    "${proxy_sub}" \
+    "${proxy_pub}" \
+    "${proxy_log}" \
+    "${chase_topic}" \
+    "${camera_topic}" \
+    "${alate_rel}" \
+    "${ros_alate_rel}" \
+    "${ros_nemala_rel}" \
+    "${sitl_runtime_host}" \
+    "${drone_log_dir}" >>"${resolved_sitl_endpoints_tsv}"
+done <"${visual_assets_dir}/drones.tsv"
+
+while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_port resolved_mavlink_port resolved_mavlink_aux_port fdm_port_in fdm_port_out proxy_name proxy_sub proxy_pub proxy_log chase_topic camera_topic alate_rel ros_alate_rel ros_nemala_rel sitl_runtime_host drone_log_dir; do
+  [ -n "${drone_id}" ] || continue
+
+  if ! run_pre_hlc_mavlink_probe "${drone_id}" "${sitl_runtime_host}" "${resolved_mavlink_aux_port}" 15; then
+    write_drone_startup_failure_report \
+      "${drone_id}" \
+      "pre_hlc_endpoint" \
+      "${run_readiness_dir}/${drone_id}.pre_hlc_endpoint.json"
+    if should_tolerate_pre_hlc_probe_failure "${run_readiness_dir}/${drone_id}.pre_hlc_endpoint.json"; then
+      printf 'Pre-HLC MAVLink readiness probe did not stabilize for %s; continuing with HLC attach and relying on post-ready MAVLink validation.\n' "${drone_id}" >&2
+    else
+      printf 'Pre-HLC MAVLink readiness probe failed for %s.\n' "${drone_id}" >&2
+      exit 1
+    fi
+  fi
   set_runtime_master_port "${current_run_dir}/visual_assets/${alate_rel}" "${sitl_runtime_host}" "${resolved_mavlink_port}"
   set_manifest_mavlink_endpoint "${visual_assets_dir}/manifest.json" "${drone_id}" "${sitl_runtime_host}" "${resolved_mavlink_port}"
   set_manifest_mavlink_endpoint "${current_run_dir}/run_manifest.json" "${drone_id}" "${sitl_runtime_host}" "${resolved_mavlink_port}"
   log "Using deterministic fleet MAVLink endpoint for ${drone_id}: tcp:${sitl_runtime_host}:${resolved_mavlink_port}"
-
-done <"${visual_assets_dir}/drones.tsv"
-
-start_profile_supervisor
-start_profile_sidecars
-
-sleep 5
-
-while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_port mavlink_port mavlink_aux_port fdm_port_in fdm_port_out proxy_name proxy_sub proxy_pub proxy_log chase_topic camera_topic alate_rel ros_alate_rel ros_nemala_rel; do
-  [ -n "${drone_id}" ] || continue
-  drone_log_dir="${run_logs_dir}/${drone_id}"
-  mkdir -p "${drone_log_dir}"
 
   docker run -d --rm \
     --name "${STACK_NAME}-${drone_id}-proxy" \
@@ -768,9 +890,9 @@ while IFS=$'\t' read -r drone_id namespace sitl_host runtime_model_name serial0_
   # Stage the control slices one vehicle at a time. This keeps fleet bring-up
   # deterministic and avoids overloading the shared simulator before each drone
   # has fully reached its takeoff-capable ready state.
-  wait_for_drone_readiness "${drone_id}" "${sitl_host}" "${mavlink_aux_port}" 240
+  wait_for_drone_readiness "${drone_id}" "${sitl_runtime_host}" "${resolved_mavlink_aux_port}" 240
 
-done <"${visual_assets_dir}/drones.tsv"
+done <"${resolved_sitl_endpoints_tsv}"
 wait_for_focus_topics
 
 capture_basic_diagnostics

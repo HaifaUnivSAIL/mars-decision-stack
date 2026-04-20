@@ -308,6 +308,7 @@ def generate_runtime_model(source_model: Path, drone: dict, runtime_fleet: dict)
 
     set_sensor_topic(root, "camera", drone["camera_topics"]["deployed"])
     set_sensor_topic(root, "chase_camera", drone["camera_topics"]["chase"])
+    set_plugin_text(root, "GstCameraPlugin", "udp_port", str(drone["gst_udp_port"]))
 
     deployed_stream = runtime_fleet["camera_streams"]["deployed"]
     chase_stream = runtime_fleet["camera_streams"]["chase"]

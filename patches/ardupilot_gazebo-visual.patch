@@ -1,1138 +1,540 @@
-diff --git a/models/iris_with_camera_calibration/model.config b/models/iris_with_camera_calibration/model.config
-new file mode 100755
-index 0000000..187a827
---- /dev/null
-+++ b/models/iris_with_camera_calibration/model.config
-@@ -0,0 +1,23 @@
-+<?xml version="1.0"?>
+diff --git a/include/ArduPilotPlugin.hh b/include/ArduPilotPlugin.hh
+index 7f0770c..6a44aee 100755
+--- a/include/ArduPilotPlugin.hh
++++ b/include/ArduPilotPlugin.hh
+@@ -84,6 +84,10 @@ class ArduPilotPluginPrivate;
+ /// <anemometer>  scoped name for the wind sensor
+ /// <connectionTimeoutMaxCount> timeout before giving up on
+ ///                             controller synchronization
++/// <offline_recv_timeout_ms>   UDP receive wait before the controller is
++///                             considered online
++/// <online_recv_timeout_ms>    UDP receive wait after the controller is
++///                             online
+ /// <lock_step>           set true to enforce lock-step simulation
+ /// <no_time_sync>        set true to prevent SITL from trying to sync
+ ///                       with wall-time
+diff --git a/src/ArduPilotPlugin.cc b/src/ArduPilotPlugin.cc
+index 8309c37..6c66f4b 100755
+--- a/src/ArduPilotPlugin.cc
++++ b/src/ArduPilotPlugin.cc
+@@ -23,12 +23,18 @@
+ #include <gz/msgs/laserscan.pb.h>
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <filesystem>
+ #include <functional>
++#include <fstream>
++#include <iomanip>
+ #include <memory>
+ #include <mutex>
+-#include <string>
+ #include <sstream>
++#include <string>
+ #include <vector>
+ 
+ #include <gz/common/SignalHandler.hh>
+@@ -68,6 +74,11 @@
+ // can be defined in the <plugin>.
+ #define MAX_MOTORS 255
+ 
++namespace
++{
++std::string sanitizeName(const std::string &_value);
++}
 +
-+<model>
-+  <name>Iris with Camera Calibration</name>
-+  <version>1.0</version>
-+  <sdf version="1.9">model.sdf</sdf>
+ // Register plugin
+ GZ_ADD_PLUGIN(gz::sim::systems::ArduPilotPlugin,
+               gz::sim::System,
+@@ -238,6 +249,12 @@ class gz::sim::systems::ArduPilotPluginPrivate
+   /// \brief The port for the SITL flight controller - auto detected
+   public: uint16_t fcu_port_out;
+ 
++  /// \brief UDP receive wait before the controller is detected online.
++  public: uint32_t offlineRecvTimeoutMs{1};
 +
-+  <author>
-+    <name>MARS Decision Stack</name>
-+  </author>
++  /// \brief UDP receive wait after the controller is detected online.
++  public: uint32_t onlineRecvTimeoutMs{10};
 +
-+  <description>
-+    Iris quadrotor with a rigid front-bottom deployed camera calibration rig.
-+    The visible payload is a fixed camera pod, while invisible helper joints
-+    expose 6-DOF tuning controls for calibration only.
-+  </description>
-+  <depend>
-+    <model>
-+      <uri>model://iris_with_standoffs</uri>
-+      <version>2.0</version>
-+    </model>
-+  </depend>
-+</model>
-diff --git a/models/iris_with_camera_calibration/model.sdf b/models/iris_with_camera_calibration/model.sdf
-new file mode 100644
-index 0000000..b3519ac
---- /dev/null
-+++ b/models/iris_with_camera_calibration/model.sdf
-@@ -0,0 +1,701 @@
-+<?xml version='1.0'?>
-+<sdf version="1.9">
-+  <model name="iris_with_camera_calibration">
-+    <include>
-+      <uri>model://iris_with_standoffs</uri>
-+    </include>
+   /// \brief The name of the IMU sensor
+   public: std::string imuName;
+ 
+@@ -368,6 +385,21 @@ class gz::sim::systems::ArduPilotPluginPrivate
+   /// \brief Last sent JSON string, so we can resend if needed.
+   public: std::string json_str;
+ 
++  /// \brief Simulation time associated with the current profile event.
++  public: double profileSimTimeSec{0.0};
 +
-+    <link name="deployed_camera_default_translation_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++  /// \brief Simulation time used to build the most recent JSON state.
++  public: double lastStateJsonSimTimeSec{0.0};
 +
-+    <joint name="deployed_camera_mount_joint" type="fixed">
-+      <parent>iris_with_standoffs::base_link</parent>
-+      <child>deployed_camera_default_translation_link</child>
-+      <pose>0 0 0 0 0 0</pose>
-+    </joint>
++  /// \brief Enable per-drone FDM timing traces when STACK_PROFILE=1.
++  public: bool profileEnabled{false};
 +
-+    <link name="deployed_camera_x_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++  /// \brief Output CSV stream for FDM timing traces.
++  public: std::ofstream profileStream;
 +
-+    <joint name="deployed_camera_x_joint" type="prismatic">
-+      <parent>deployed_camera_default_translation_link</parent>
-+      <child>deployed_camera_x_link</child>
-+      <axis>
-+        <xyz>1 0 0</xyz>
-+        <dynamics>
-+          <damping>0.05</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-0.10</lower>
-+          <upper>0.35</upper>
-+          <effort>25</effort>
-+          <velocity>1.0</velocity>
-+        </limit>
-+      </axis>
-+    </joint>
++  /// \brief Last wall time at which the profile stream was flushed.
++  public: double profileLastFlushWallTimeSec{0.0};
 +
-+    <link name="deployed_camera_y_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
+   /// \brief A copy of the most recently received signal.
+   public: int signal{0};
+ 
+@@ -380,6 +412,106 @@ class gz::sim::systems::ArduPilotPluginPrivate
+       gzdbg << "Plugin received signal[" << _sig  << "]\n";
+       this->signal = _sig;
+   }
 +
-+    <joint name="deployed_camera_y_joint" type="prismatic">
-+      <parent>deployed_camera_x_link</parent>
-+      <child>deployed_camera_y_link</child>
-+      <axis>
-+        <xyz>0 1 0</xyz>
-+        <dynamics>
-+          <damping>0.05</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-0.20</lower>
-+          <upper>0.20</upper>
-+          <effort>25</effort>
-+          <velocity>1.0</velocity>
-+        </limit>
-+      </axis>
-+    </joint>
++  /// \brief Initialise per-model profiling output from the environment.
++  public: void ConfigureProfileOutput()
++  {
++    const char *stackProfile = std::getenv("STACK_PROFILE");
++    if (nullptr == stackProfile || std::string(stackProfile) != "1")
++    {
++      return;
++    }
 +
-+    <link name="deployed_camera_z_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++    const char *runDir = std::getenv("STACK_PROFILE_RUN_DIR");
++    if (nullptr == runDir || std::string(runDir).empty())
++    {
++      return;
++    }
 +
-+    <joint name="deployed_camera_z_joint" type="prismatic">
-+      <parent>deployed_camera_y_link</parent>
-+      <child>deployed_camera_z_link</child>
-+      <axis>
-+        <xyz>0 0 1</xyz>
-+        <dynamics>
-+          <damping>0.05</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-0.35</lower>
-+          <upper>0.10</upper>
-+          <effort>25</effort>
-+          <velocity>1.0</velocity>
-+        </limit>
-+      </axis>
-+    </joint>
++    std::filesystem::path outputDir(runDir);
++    outputDir /= "diagnostics";
++    outputDir /= "profile";
++    outputDir /= "fdm_exchange";
++    std::error_code ec;
++    std::filesystem::create_directories(outputDir, ec);
++    if (ec)
++    {
++      gzwarn << "[" << this->modelName << "] "
++             << "Failed to create FDM profile directory: "
++             << outputDir.string() << "\n";
++      return;
++    }
 +
-+    <link name="deployed_camera_mount_frame_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++    const auto fileName = sanitizeName(this->modelName) + ".csv";
++    auto outputPath = outputDir / fileName;
++    this->profileStream.open(outputPath, std::ios::out | std::ios::trunc);
++    if (!this->profileStream.is_open())
++    {
++      gzwarn << "[" << this->modelName << "] "
++             << "Failed to open FDM profile output: "
++             << outputPath.string() << "\n";
++      return;
++    }
 +
-+    <joint name="deployed_camera_mount_frame_joint" type="fixed">
-+      <parent>deployed_camera_z_link</parent>
-+      <child>deployed_camera_mount_frame_link</child>
-+      <pose>0 0 0 0 0 0</pose>
-+    </joint>
++    this->profileStream
++      << "wall_time_epoch_sec,monotonic_sec,sim_time_sec,model_name,event,"
++      << "wait_ms,duration_sec,recv_size,drained_packets,frame_count,frame_rate,"
++      << "skipped_frames,connection_timeout_count,online,fdm_port_in,fcu_port_out,bytes_sent\n";
++    this->profileStream.flush();
++    this->profileLastFlushWallTimeSec = 0.0;
++    this->profileEnabled = true;
++  }
 +
-+    <link name="deployed_camera_default_orientation_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++  /// \brief Record an FDM exchange event for later analysis.
++  public: void LogProfileEvent(
++      const std::string &_event,
++      uint32_t _waitMs,
++      double _durationSec,
++      ssize_t _recvSize,
++      int _drainedPackets,
++      int64_t _frameCount,
++      int64_t _frameRate,
++      int64_t _skippedFrames,
++      ssize_t _bytesSent)
++  {
++    if (!this->profileEnabled || !this->profileStream.is_open())
++    {
++      return;
++    }
 +
-+    <joint name="deployed_camera_default_orientation_joint" type="fixed">
-+      <parent>deployed_camera_mount_frame_link</parent>
-+      <child>deployed_camera_default_orientation_link</child>
-+      <pose>0 0 0 0 0 0</pose>
-+    </joint>
++    const auto wallNow = std::chrono::system_clock::now();
++    const auto monotonicNow = std::chrono::steady_clock::now();
++    const auto wallSec =
++      std::chrono::duration<double>(wallNow.time_since_epoch()).count();
++    const auto monotonicSec =
++      std::chrono::duration<double>(monotonicNow.time_since_epoch()).count();
 +
-+    <link name="deployed_camera_yaw_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
++    this->profileStream
++      << std::fixed << std::setprecision(6)
++      << wallSec << ","
++      << monotonicSec << ","
++      << this->profileSimTimeSec << ","
++      << this->modelName << ","
++      << _event << ","
++      << _waitMs << ","
++      << _durationSec << ","
++      << _recvSize << ","
++      << _drainedPackets << ","
++      << _frameCount << ","
++      << _frameRate << ","
++      << _skippedFrames << ","
++      << this->connectionTimeoutCount << ","
++      << (this->arduPilotOnline ? 1 : 0) << ","
++      << this->fdm_port_in << ","
++      << this->fcu_port_out << ","
++      << _bytesSent << "\n";
 +
-+    <joint name="deployed_camera_yaw_joint" type="revolute">
-+      <parent>deployed_camera_default_orientation_link</parent>
-+      <child>deployed_camera_yaw_link</child>
-+      <axis>
-+        <xyz>0 0 1</xyz>
-+        <dynamics>
-+          <damping>0.02</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-3.1415926</lower>
-+          <upper>3.1415926</upper>
-+        </limit>
-+      </axis>
-+    </joint>
++    if ((wallSec - this->profileLastFlushWallTimeSec) >= 1.0)
++    {
++      this->profileStream.flush();
++      this->profileLastFlushWallTimeSec = wallSec;
++    }
++  }
+ };
+ 
+ /////////////////////////////////////////////////
+@@ -509,6 +641,11 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
+   this->dataPtr->connectionTimeoutMaxCount =
+     sdfClone->Get("connectionTimeoutMaxCount", 10).first;
+ 
++  this->dataPtr->offlineRecvTimeoutMs =
++    sdfClone->Get("offline_recv_timeout_ms", this->dataPtr->offlineRecvTimeoutMs).first;
++  this->dataPtr->onlineRecvTimeoutMs =
++    sdfClone->Get("online_recv_timeout_ms", this->dataPtr->onlineRecvTimeoutMs).first;
 +
-+    <link name="deployed_camera_pitch_link">
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
+   // Enforce lock-step simulation (has default: false)
+   this->dataPtr->isLockStep =
+     sdfClone->Get("lock_step", this->dataPtr->isLockStep).first;
+@@ -527,6 +664,8 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
+         this->dataPtr.get(),
+         std::placeholders::_1));
+ 
++  this->dataPtr->ConfigureProfileOutput();
 +
-+    <joint name="deployed_camera_pitch_joint" type="revolute">
-+      <parent>deployed_camera_yaw_link</parent>
-+      <child>deployed_camera_pitch_link</child>
-+      <axis>
-+        <xyz>0 1 0</xyz>
-+        <dynamics>
-+          <damping>0.02</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-3.1415926</lower>
-+          <upper>3.1415926</upper>
-+        </limit>
-+      </axis>
-+    </joint>
+   gzlog << "[" << this->dataPtr->modelName << "] "
+         << "ArduPilot ready to fly. The force will be with you" << "\n";
+ }
+@@ -1201,6 +1340,9 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
+         if (!_info.paused && _info.simTime >
+             this->dataPtr->lastControllerUpdateTime)
+         {
++            this->dataPtr->profileSimTimeSec =
++                std::chrono::duration_cast<std::chrono::duration<double>>(
++                    _info.simTime).count();
+             if (this->dataPtr->isLockStep)
+             {
+                 while (!this->ReceiveServoPacket() &&
+@@ -1237,6 +1379,9 @@ void gz::sim::systems::ArduPilotPlugin::PostUpdate(
+     const gz::sim::EntityComponentManager &_ecm)
+ {
+     std::lock_guard<std::mutex> lock(this->dataPtr->mutex);
++    this->dataPtr->profileSimTimeSec =
++        std::chrono::duration_cast<std::chrono::duration<double>>(
++            _info.simTime).count();
+ 
+     // Publish the new state.
+     if (!_info.paused && _info.simTime > this->dataPtr->lastControllerUpdateTime
+@@ -1418,6 +1563,20 @@ void gz::sim::systems::ArduPilotPlugin::ApplyMotorForces(
+ /////////////////////////////////////////////////
+ namespace
+ {
++std::string sanitizeName(const std::string &_value)
++{
++  std::string sanitized = _value;
++  std::replace_if(
++    sanitized.begin(),
++    sanitized.end(),
++    [](const char _ch)
++    {
++      return !std::isalnum(static_cast<unsigned char>(_ch)) && _ch != '_';
++    },
++    '_');
++  return sanitized;
++}
 +
-+    <link name="deployed_camera_rigid_mount_link">
-+      <gravity>false</gravity>
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+    </link>
+ /// \brief Get a servo packet. Templated for 16 or 32 channel packets.
+ template<typename TServoPacket>
+ ssize_t getServoPacket(
+@@ -1426,7 +1585,8 @@ ssize_t getServoPacket(
+   uint16_t &_fcu_port_out,
+   uint32_t _waitMs,
+   const std::string &_modelName,
+-  TServoPacket &_pkt
++  TServoPacket &_pkt,
++  int &_drainedCount
+ )
+ {
+     ssize_t recvSize = _sock.recv(&_pkt, sizeof(TServoPacket), _waitMs);
+@@ -1434,7 +1594,7 @@ ssize_t getServoPacket(
+     _sock.get_client_address(_fcu_address, _fcu_port_out);
+ 
+     // drain the socket in the case we're backed up
+-    int counter = 0;
++    _drainedCount = 0;
+     while (true)
+     {
+         TServoPacket last_pkt;
+@@ -1443,14 +1603,14 @@ ssize_t getServoPacket(
+         {
+             break;
+         }
+-        counter++;
++        _drainedCount++;
+         _pkt = last_pkt;
+         recvSize = recvSize_last;
+     }
+-    if (counter > 0)
++    if (_drainedCount > 0)
+     {
+         gzwarn << "[" << _modelName << "] "
+-               << "Drained n packets: " << counter << "\n";
++               << "Drained n packets: " << _drainedCount << "\n";
+     }
+     return recvSize;
+ }
+@@ -1471,15 +1631,15 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     uint32_t waitMs;
+     if (this->dataPtr->arduPilotOnline)
+     {
+-        // Increase timeout for recv once we detect a packet from ArduPilot FCS.
+-        // If this value is too high then it will block the main Gazebo
+-        // update loop and adversely affect the RTF.
+-        waitMs = 10;
++        // Once the controller is online, keep the wait budget configurable so
++        // multi-vehicle runs can avoid stalling the Gazebo update loop.
++        waitMs = this->dataPtr->onlineRecvTimeoutMs;
+     }
+     else
+     {
+-        // Otherwise skip quickly and do not set control force.
+-        waitMs = 1;
++        // Before the first packet arrives, stay responsive and avoid blocking
++        // the simulation loop while the controller comes up.
++        waitMs = this->dataPtr->offlineRecvTimeoutMs;
+     }
+ 
+     // 16 / 32 channel compatibility
+@@ -1488,6 +1648,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     uint16_t pkt_frame_count{0};
+     std::array<uint16_t, 32> pkt_pwm;
+     ssize_t recvSize{-1};
++    int drainedPackets{0};
++    auto recvStart = std::chrono::steady_clock::now();
+     if (this->dataPtr->have32Channels)
+     {
+       servo_packet_32 pkt;
+@@ -1497,7 +1659,8 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+           this->dataPtr->fcu_port_out,
+           waitMs,
+           this->dataPtr->modelName,
+-          pkt);
++          pkt,
++          drainedPackets);
+       pkt_magic = pkt.magic;
+       pkt_frame_rate = pkt.frame_rate;
+       pkt_frame_count = pkt.frame_count;
+@@ -1512,16 +1675,29 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+           this->dataPtr->fcu_port_out,
+           waitMs,
+           this->dataPtr->modelName,
+-          pkt);
++          pkt,
++          drainedPackets);
+       pkt_magic = pkt.magic;
+       pkt_frame_rate = pkt.frame_rate;
+       pkt_frame_count = pkt.frame_count;
+       std::copy(std::begin(pkt.pwm), std::end(pkt.pwm), std::begin(pkt_pwm));
+     }
++    auto recvDurationSec =
++      std::chrono::duration<double>(std::chrono::steady_clock::now() - recvStart).count();
+ 
+     // didn't receive a packet, increment timeout count if online, then return
+     if (recvSize == -1)
+     {
++        this->dataPtr->LogProfileEvent(
++          "recv_timeout",
++          waitMs,
++          recvDurationSec,
++          recvSize,
++          drainedPackets,
++          static_cast<int64_t>(this->dataPtr->fcu_frame_count),
++          static_cast<int64_t>(this->dataPtr->fcu_frame_rate),
++          0,
++          -1);
+         if (this->dataPtr->arduPilotOnline)
+         {
+             if (++this->dataPtr->connectionTimeoutCount >
+@@ -1540,6 +1716,16 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+                     gzwarn << "[" << this->dataPtr->modelName << "] "
+                         << "Broken ArduPilot connection,"
+                         << " resetting motor control.\n";
++                    this->dataPtr->LogProfileEvent(
++                      "controller_offline",
++                      waitMs,
++                      recvDurationSec,
++                      recvSize,
++                      drainedPackets,
++                      static_cast<int64_t>(this->dataPtr->fcu_frame_count),
++                      static_cast<int64_t>(this->dataPtr->fcu_frame_rate),
++                      0,
++                      -1);
+                     this->ResetPIDs();
+                 }
+             }
+@@ -1583,26 +1769,67 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     {
+         this->dataPtr->arduPilotOnline = true;
+ 
+-        gzlog << "[" << this->dataPtr->modelName << "] "
++        gzmsg << "[" << this->dataPtr->modelName << "] "
+             << "Connected to ArduPilot controller @ "
+             << this->dataPtr->fcu_address << ":" << this->dataPtr->fcu_port_out
+             << "\n";
++        this->dataPtr->LogProfileEvent(
++          "controller_online",
++          waitMs,
++          recvDurationSec,
++          recvSize,
++          drainedPackets,
++          static_cast<int64_t>(pkt_frame_count),
++          static_cast<int64_t>(pkt_frame_rate),
++          0,
++          -1);
+     }
+ 
+     // update frame rate
+     this->dataPtr->fcu_frame_rate = pkt_frame_rate;
+ 
++    int64_t skippedFrames{0};
 +
-+    <link name="deployed_camera_pod_link">
-+      <gravity>false</gravity>
-+      <inertial>
-+        <mass>0.08</mass>
-+        <inertia>
-+          <ixx>0.00005</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>0.00008</iyy>
-+          <iyz>0</iyz>
-+          <izz>0.00008</izz>
-+        </inertia>
-+      </inertial>
-+      <visual name="mount_bracket_visual">
-+        <pose>-0.020 0 0.028 0 0 0</pose>
-+        <geometry>
-+          <box>
-+            <size>0.050 0.040 0.006</size>
-+          </box>
-+        </geometry>
-+        <material>
-+          <ambient>0.10 0.10 0.10 1</ambient>
-+          <diffuse>0.10 0.10 0.10 1</diffuse>
-+          <specular>0.03 0.03 0.03 1</specular>
-+        </material>
-+      </visual>
-+      <visual name="camera_body_visual">
-+        <pose>-0.030 0 0 0 0 0</pose>
-+        <geometry>
-+          <box>
-+            <size>0.080 0.060 0.050</size>
-+          </box>
-+        </geometry>
-+        <material>
-+          <ambient>0.18 0.18 0.18 1</ambient>
-+          <diffuse>0.18 0.18 0.18 1</diffuse>
-+          <specular>0.05 0.05 0.05 1</specular>
-+        </material>
-+      </visual>
-+      <visual name="lens_visual">
-+        <pose>0.018 0 0 0 1.57079632679 0</pose>
-+        <geometry>
-+          <cylinder>
-+            <radius>0.018</radius>
-+            <length>0.020</length>
-+          </cylinder>
-+        </geometry>
-+        <material>
-+          <ambient>0.03 0.03 0.03 1</ambient>
-+          <diffuse>0.03 0.03 0.03 1</diffuse>
-+          <specular>0.20 0.20 0.20 1</specular>
-+        </material>
-+      </visual>
-+    </link>
+     // check for controller reset
+     if (pkt_frame_count < this->dataPtr->fcu_frame_count)
+     {
+         /// \todo(anyone) implement re-initialisation
+-        gzwarn << "ArduPilot controller has reset\n";
++        gzwarn << "[" << this->dataPtr->modelName << "] "
++               << "ArduPilot controller has reset"
++               << " frame_count=" << pkt_frame_count
++               << " previous_frame_count=" << this->dataPtr->fcu_frame_count
++               << " controller=" << this->dataPtr->fcu_address << ":"
++               << this->dataPtr->fcu_port_out << "\n";
++        this->dataPtr->LogProfileEvent(
++          "controller_reset",
++          waitMs,
++          recvDurationSec,
++          recvSize,
++          drainedPackets,
++          static_cast<int64_t>(pkt_frame_count),
++          static_cast<int64_t>(pkt_frame_rate),
++          0,
++          -1);
+     }
+ 
+     // check for duplicate frame
+     else if (pkt_frame_count == this->dataPtr->fcu_frame_count)
+     {
+-        gzwarn << "Duplicate input frame\n";
++        gzwarn << "[" << this->dataPtr->modelName << "] "
++               << "Duplicate input frame"
++               << " frame_count=" << pkt_frame_count
++               << " controller=" << this->dataPtr->fcu_address << ":"
++               << this->dataPtr->fcu_port_out << "\n";
++        this->dataPtr->LogProfileEvent(
++          "duplicate_frame",
++          waitMs,
++          recvDurationSec,
++          recvSize,
++          drainedPackets,
++          static_cast<int64_t>(pkt_frame_count),
++          static_cast<int64_t>(pkt_frame_rate),
++          0,
++          -1);
+ 
+         // for lock-step resend last state rather than ignore
+         if (this->dataPtr->isLockStep)
+@@ -1617,9 +1844,26 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     else if (pkt_frame_count != this->dataPtr->fcu_frame_count + 1
+         && this->dataPtr->arduPilotOnline)
+     {
+-        gzwarn << "Missed "
+-            << pkt_frame_count - this->dataPtr->fcu_frame_count
+-            << " input frames\n";
++        skippedFrames =
++          static_cast<int64_t>(pkt_frame_count) -
++          static_cast<int64_t>(this->dataPtr->fcu_frame_count) - 1;
++        gzwarn << "[" << this->dataPtr->modelName << "] "
++               << "Missed " << skippedFrames
++               << " input frames"
++               << " current_frame_count=" << pkt_frame_count
++               << " previous_frame_count=" << this->dataPtr->fcu_frame_count
++               << " controller=" << this->dataPtr->fcu_address << ":"
++               << this->dataPtr->fcu_port_out << "\n";
++        this->dataPtr->LogProfileEvent(
++          "missed_frames",
++          waitMs,
++          recvDurationSec,
++          recvSize,
++          drainedPackets,
++          static_cast<int64_t>(pkt_frame_count),
++          static_cast<int64_t>(pkt_frame_rate),
++          skippedFrames,
++          -1);
+     }
+ 
+     // update frame count
+@@ -1628,6 +1872,17 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+     // reset the connection timeout so we don't accumulate
+     this->dataPtr->connectionTimeoutCount = 0;
+ 
++    this->dataPtr->LogProfileEvent(
++      "recv_packet",
++      waitMs,
++      recvDurationSec,
++      recvSize,
++      drainedPackets,
++      static_cast<int64_t>(pkt_frame_count),
++      static_cast<int64_t>(pkt_frame_rate),
++      skippedFrames,
++      -1);
 +
-+    <joint name="deployed_camera_roll_joint" type="revolute">
-+      <parent>deployed_camera_pitch_link</parent>
-+      <child>deployed_camera_rigid_mount_link</child>
-+      <axis>
-+        <xyz>1 0 0</xyz>
-+        <dynamics>
-+          <damping>0.02</damping>
-+        </dynamics>
-+        <limit>
-+          <lower>-3.1415926</lower>
-+          <upper>3.1415926</upper>
-+        </limit>
-+      </axis>
-+    </joint>
+     this->UpdateMotorCommands(pkt_pwm);
+ 
+     return true;
+@@ -1716,6 +1971,8 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+     double _simTime,
+     const gz::sim::EntityComponentManager &_ecm) const
+ {
++    this->dataPtr->lastStateJsonSimTimeSec = _simTime;
 +
-+    <joint name="deployed_camera_pod_joint" type="fixed">
-+      <parent>deployed_camera_rigid_mount_link</parent>
-+      <child>deployed_camera_pod_link</child>
-+      <pose>0 0 0 0 0 0</pose>
-+    </joint>
+     // Make a local copy of the latest IMU data (it's filled in
+     // on receipt by ImuCb()).
+     gz::msgs::IMU imuMsg;
+@@ -2025,17 +2282,25 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+ /////////////////////////////////////////////////
+ void gz::sim::systems::ArduPilotPlugin::SendState() const
+ {
+-#if DEBUG_JSON_IO
+-    auto bytes_sent =
+-#endif
+-    this->dataPtr->sock.sendto(
++    auto bytesSent = this->dataPtr->sock.sendto(
+         this->dataPtr->json_str.c_str(),
+         this->dataPtr->json_str.size(),
+         this->dataPtr->fcu_address,
+         this->dataPtr->fcu_port_out);
+ 
++    this->dataPtr->LogProfileEvent(
++      "send_state",
++      0u,
++      0.0,
++      -1,
++      0,
++      static_cast<int64_t>(this->dataPtr->fcu_frame_count),
++      static_cast<int64_t>(this->dataPtr->fcu_frame_rate),
++      0,
++      bytesSent);
 +
-+    <link name="deployed_camera_optical_link">
-+      <gravity>false</gravity>
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+      <sensor name="camera" type="camera">
-+        <gz_frame_id>deployed_camera_optical_link</gz_frame_id>
-+        <topic>/mars/visual/deployed_camera</topic>
-+        <pose>0 0 0 0 0 0</pose>
-+        <camera>
-+          <horizontal_fov>2.0</horizontal_fov>
-+          <image>
-+            <width>640</width>
-+            <height>480</height>
-+          </image>
-+          <clip>
-+            <near>0.05</near>
-+            <far>15000</far>
-+          </clip>
-+        </camera>
-+        <always_on>1</always_on>
-+        <update_rate>10</update_rate>
-+        <visualize>1</visualize>
-+
-+        <plugin filename="CameraZoomPlugin"
-+            name="CameraZoomPlugin">
-+          <max_zoom>125.0</max_zoom>
-+          <slew_rate>0.42514285714</slew_rate>
-+        </plugin>
-+
-+        <plugin name="GstCameraPlugin"
-+            filename="GstCameraPlugin">
-+          <udp_host>127.0.0.1</udp_host>
-+          <udp_port>5600</udp_port>
-+          <use_basic_pipeline>true</use_basic_pipeline>
-+          <use_cuda>false</use_cuda>
-+        </plugin>
-+      </sensor>
-+    </link>
-+
-+    <joint name="deployed_camera_optical_joint" type="fixed">
-+      <parent>deployed_camera_pod_link</parent>
-+      <child>deployed_camera_optical_link</child>
-+      <pose>0 0 0 0 0 0</pose>
-+    </joint>
-+
-+    <link name="chase_camera_link">
-+      <pose degrees="true">-2.4 0 0.9 0 10 0</pose>
-+      <inertial>
-+        <mass>0.001</mass>
-+        <inertia>
-+          <ixx>1e-06</ixx>
-+          <ixy>0</ixy>
-+          <ixz>0</ixz>
-+          <iyy>1e-06</iyy>
-+          <iyz>0</iyz>
-+          <izz>1e-06</izz>
-+        </inertia>
-+      </inertial>
-+      <sensor name="chase_camera" type="camera">
-+        <gz_frame_id>chase_camera_link</gz_frame_id>
-+        <topic>/mars/visual/chase_camera</topic>
-+        <always_on>1</always_on>
-+        <update_rate>30</update_rate>
-+        <visualize>false</visualize>
-+        <camera>
-+          <horizontal_fov>1.2217305</horizontal_fov>
-+          <image>
-+            <width>1280</width>
-+            <height>720</height>
-+            <format>R8G8B8</format>
-+          </image>
-+          <clip>
-+            <near>0.05</near>
-+            <far>500</far>
-+          </clip>
-+        </camera>
-+      </sensor>
-+    </link>
-+
-+    <joint name="chase_camera_joint" type="fixed">
-+      <parent>iris_with_standoffs::base_link</parent>
-+      <child>chase_camera_link</child>
-+    </joint>
-+
-+    <!-- plugins -->
-+    <plugin filename="gz-sim-joint-state-publisher-system"
-+      name="gz::sim::systems::JointStatePublisher">
-+    </plugin>
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>0.084 0 0</cp>
-+      <forward>0 1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_0</link_name>
-+    </plugin>
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>-0.084 0 0</cp>
-+      <forward>0 -1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_0</link_name>
-+    </plugin>
-+
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>0.084 0 0</cp>
-+      <forward>0 1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_1</link_name>
-+    </plugin>
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>-0.084 0 0</cp>
-+      <forward>0 -1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_1</link_name>
-+    </plugin>
-+
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>0.084 0 0</cp>
-+      <forward>0 -1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_2</link_name>
-+    </plugin>
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>-0.084 0 0</cp>
-+      <forward>0 1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_2</link_name>
-+    </plugin>
-+
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>0.084 0 0</cp>
-+      <forward>0 -1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_3</link_name>
-+    </plugin>
-+    <plugin filename="gz-sim-lift-drag-system"
-+        name="gz::sim::systems::LiftDrag">
-+      <a0>0.3</a0>
-+      <alpha_stall>1.4</alpha_stall>
-+      <cla>4.2500</cla>
-+      <cda>0.10</cda>
-+      <cma>0.0</cma>
-+      <cla_stall>-0.025</cla_stall>
-+      <cda_stall>0.0</cda_stall>
-+      <cma_stall>0.0</cma_stall>
-+      <area>0.002</area>
-+      <air_density>1.2041</air_density>
-+      <cp>-0.084 0 0</cp>
-+      <forward>0 1 0</forward>
-+      <upward>0 0 1</upward>
-+      <link_name>iris_with_standoffs::rotor_3</link_name>
-+    </plugin>
-+
-+    <plugin filename="gz-sim-apply-joint-force-system"
-+      name="gz::sim::systems::ApplyJointForce">
-+      <joint_name>iris_with_standoffs::rotor_0_joint</joint_name>
-+    </plugin>
-+    <plugin filename="gz-sim-apply-joint-force-system"
-+      name="gz::sim::systems::ApplyJointForce">
-+      <joint_name>iris_with_standoffs::rotor_1_joint</joint_name>
-+    </plugin>
-+    <plugin filename="gz-sim-apply-joint-force-system"
-+      name="gz::sim::systems::ApplyJointForce">
-+      <joint_name>iris_with_standoffs::rotor_2_joint</joint_name>
-+    </plugin>
-+    <plugin filename="gz-sim-apply-joint-force-system"
-+      name="gz::sim::systems::ApplyJointForce">
-+      <joint_name>iris_with_standoffs::rotor_3_joint</joint_name>
-+    </plugin>
-+
-+    <plugin name="ArduPilotPlugin"
-+      filename="ArduPilotPlugin">
-+      <!-- Port settings -->
-+      <fdm_addr>0.0.0.0</fdm_addr>
-+      <fdm_port_in>9002</fdm_port_in>
-+      <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
-+      <lock_step>1</lock_step>
-+      <no_time_sync>1</no_time_sync>
-+
-+      <!-- Frame conventions
-+        Require by ArduPilot: change model and gazebo from XYZ to XY-Z coordinates
-+      -->
-+      <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
-+      <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
-+
-+      <!-- Sensors -->
-+      <imuName>iris_with_standoffs::imu_link::imu_sensor</imuName>
-+
-+      <!--
-+          incoming control command [0, 1]
-+          so offset it by 0 to get [0, 1]
-+          and divide max target by 1.
-+          offset = 0
-+          multiplier = 838 max rpm / 1 = 838
-+        -->
-+      <control channel="0">
-+        <jointName>iris_with_standoffs::rotor_0_joint</jointName>
-+        <useForce>1</useForce>
-+        <multiplier>838</multiplier>
-+        <offset>0</offset>
-+        <servo_min>1100</servo_min>
-+        <servo_max>1900</servo_max>
-+        <type>VELOCITY</type>
-+        <p_gain>0.20</p_gain>
-+        <i_gain>0</i_gain>
-+        <d_gain>0</d_gain>
-+        <i_max>0</i_max>
-+        <i_min>0</i_min>
-+        <cmd_max>2.5</cmd_max>
-+        <cmd_min>-2.5</cmd_min>
-+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
-+      </control>
-+
-+      <control channel="1">
-+        <jointName>iris_with_standoffs::rotor_1_joint</jointName>
-+        <useForce>1</useForce>
-+        <multiplier>838</multiplier>
-+        <offset>0</offset>
-+        <servo_min>1100</servo_min>
-+        <servo_max>1900</servo_max>
-+        <type>VELOCITY</type>
-+        <p_gain>0.20</p_gain>
-+        <i_gain>0</i_gain>
-+        <d_gain>0</d_gain>
-+        <i_max>0</i_max>
-+        <i_min>0</i_min>
-+        <cmd_max>2.5</cmd_max>
-+        <cmd_min>-2.5</cmd_min>
-+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
-+      </control>
-+
-+      <control channel="2">
-+        <jointName>iris_with_standoffs::rotor_2_joint</jointName>
-+        <useForce>1</useForce>
-+        <multiplier>-838</multiplier>
-+        <offset>0</offset>
-+        <servo_min>1100</servo_min>
-+        <servo_max>1900</servo_max>
-+        <type>VELOCITY</type>
-+        <p_gain>0.20</p_gain>
-+        <i_gain>0</i_gain>
-+        <d_gain>0</d_gain>
-+        <i_max>0</i_max>
-+        <i_min>0</i_min>
-+        <cmd_max>2.5</cmd_max>
-+        <cmd_min>-2.5</cmd_min>
-+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
-+      </control>
-+
-+      <control channel="3">
-+        <jointName>iris_with_standoffs::rotor_3_joint</jointName>
-+        <useForce>1</useForce>
-+        <multiplier>-838</multiplier>
-+        <offset>0</offset>
-+        <servo_min>1100</servo_min>
-+        <servo_max>1900</servo_max>
-+        <type>VELOCITY</type>
-+        <p_gain>0.20</p_gain>
-+        <i_gain>0</i_gain>
-+        <d_gain>0</d_gain>
-+        <i_max>0</i_max>
-+        <i_min>0</i_min>
-+        <cmd_max>2.5</cmd_max>
-+        <cmd_min>-2.5</cmd_min>
-+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
-+      </control>
-+
-+    </plugin>
-+
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_x_joint</joint_name>
-+      <p_gain>20</p_gain>
-+    </plugin>
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_y_joint</joint_name>
-+      <p_gain>20</p_gain>
-+    </plugin>
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_z_joint</joint_name>
-+      <p_gain>20</p_gain>
-+    </plugin>
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_yaw_joint</joint_name>
-+      <p_gain>2</p_gain>
-+    </plugin>
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_pitch_joint</joint_name>
-+      <p_gain>2</p_gain>
-+    </plugin>
-+    <plugin
-+      filename="gz-sim-joint-position-controller-system"
-+      name="gz::sim::systems::JointPositionController">
-+      <joint_name>deployed_camera_roll_joint</joint_name>
-+      <p_gain>2</p_gain>
-+    </plugin>
-+
-+  </model>
-+</sdf>
-diff --git a/models/iris_with_gimbal/model.config b/models/iris_with_gimbal/model.config
-deleted file mode 100755
-index b7fdff3..0000000
---- a/models/iris_with_gimbal/model.config
-+++ /dev/null
-@@ -1,45 +0,0 @@
--<?xml version="1.0"?>
--
--<model>
--  <name>Iris with Gimbal</name>
--  <version>2.0</version>
--  <sdf version="1.9">model.sdf</sdf>
--
--  <author>
--    <name>Fadri Furrer</name>
--    <email>fadri.furrer@mavt.ethz.ch</email>
--  </author>
--  <author>
--    <name>Michael Burri</name>
--  </author>
--  <author>
--    <name>Mina Kamel</name>
--  </author>
--  <author>
--    <name>Janosch Nikolic</name>
--  </author>
--  <author>
--    <name>Markus Achtelik</name>
--  </author>
--
--  <author>
--    <name>Rhys Mainwaring</name>
--  </author>
--
--  <description>
--    Starting with iris_with_standoffs
--    add LiftDragPlugin
--    add ArduCopterPlugin
--    add gimbal_small_2d
--  </description>
--  <depend>
--    <model>
--      <uri>model://gimbal_small_2d</uri>
--      <version>2.0</version>
--    </model>
--    <model>
--      <uri>model://iris_with_standoffs</uri>
--      <version>2.0</version>
--    </model>
--  </depend>
--</model>
-diff --git a/models/iris_with_gimbal/model.sdf b/models/iris_with_gimbal/model.sdf
-deleted file mode 100755
-index dae756d..0000000
---- a/models/iris_with_gimbal/model.sdf
-+++ /dev/null
-@@ -1,345 +0,0 @@
--<?xml version='1.0'?>
--<sdf version="1.9">
--  <model name="iris_with_gimbal">
--    <include>
--      <uri>model://iris_with_standoffs</uri>
--    </include>
--
--    <include>
--      <uri>model://gimbal_small_3d</uri>
--      <name>gimbal</name>
--      <pose degrees="true">0 -0.01 -0.124923 90 0 90</pose>    
--    </include>
--
--    <joint name="gimbal_joint" type="revolute">
--      <parent>iris_with_standoffs::base_link</parent>
--      <child>gimbal::base_link</child>
--      <axis>
--        <limit>
--          <lower>0</lower>
--          <upper>0</upper>
--        </limit>
--        <xyz>0 0 1</xyz>
--      </axis>
--    </joint>
--
--    <!-- plugins -->
--    <plugin filename="gz-sim-joint-state-publisher-system"
--      name="gz::sim::systems::JointStatePublisher">
--    </plugin>
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>0.084 0 0</cp>
--      <forward>0 1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_0</link_name>
--    </plugin>
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>-0.084 0 0</cp>
--      <forward>0 -1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_0</link_name>
--    </plugin>
--
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>0.084 0 0</cp>
--      <forward>0 1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_1</link_name>
--    </plugin>
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>-0.084 0 0</cp>
--      <forward>0 -1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_1</link_name>
--    </plugin>
--
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>0.084 0 0</cp>
--      <forward>0 -1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_2</link_name>
--    </plugin>
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>-0.084 0 0</cp>
--      <forward>0 1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_2</link_name>
--    </plugin>
--
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>0.084 0 0</cp>
--      <forward>0 -1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_3</link_name>
--    </plugin>
--    <plugin filename="gz-sim-lift-drag-system"
--        name="gz::sim::systems::LiftDrag">
--      <a0>0.3</a0>
--      <alpha_stall>1.4</alpha_stall>
--      <cla>4.2500</cla>
--      <cda>0.10</cda>
--      <cma>0.0</cma>
--      <cla_stall>-0.025</cla_stall>
--      <cda_stall>0.0</cda_stall>
--      <cma_stall>0.0</cma_stall>
--      <area>0.002</area>
--      <air_density>1.2041</air_density>
--      <cp>-0.084 0 0</cp>
--      <forward>0 1 0</forward>
--      <upward>0 0 1</upward>
--      <link_name>iris_with_standoffs::rotor_3</link_name>
--    </plugin>
--
--    <plugin filename="gz-sim-apply-joint-force-system"
--      name="gz::sim::systems::ApplyJointForce">
--      <joint_name>iris_with_standoffs::rotor_0_joint</joint_name>
--    </plugin>
--    <plugin filename="gz-sim-apply-joint-force-system"
--      name="gz::sim::systems::ApplyJointForce">
--      <joint_name>iris_with_standoffs::rotor_1_joint</joint_name>
--    </plugin>
--    <plugin filename="gz-sim-apply-joint-force-system"
--      name="gz::sim::systems::ApplyJointForce">
--      <joint_name>iris_with_standoffs::rotor_2_joint</joint_name>
--    </plugin>
--    <plugin filename="gz-sim-apply-joint-force-system"
--      name="gz::sim::systems::ApplyJointForce">
--      <joint_name>iris_with_standoffs::rotor_3_joint</joint_name>
--    </plugin>
--
--    <plugin name="ArduPilotPlugin"
--      filename="ArduPilotPlugin">
--      <!-- Port settings -->
--      <fdm_addr>127.0.0.1</fdm_addr>
--      <fdm_port_in>9002</fdm_port_in>
--      <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
--      <lock_step>1</lock_step>
--      <no_time_sync>1</no_time_sync>
--
--      <!-- Frame conventions
--        Require by ArduPilot: change model and gazebo from XYZ to XY-Z coordinates
--      -->
--      <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
--      <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
--
--      <!-- Sensors -->
--      <imuName>iris_with_standoffs::imu_link::imu_sensor</imuName>
--
--      <!--
--          incoming control command [0, 1]
--          so offset it by 0 to get [0, 1]
--          and divide max target by 1.
--          offset = 0
--          multiplier = 838 max rpm / 1 = 838
--        -->
--      <control channel="0">
--        <jointName>iris_with_standoffs::rotor_0_joint</jointName>
--        <useForce>1</useForce>
--        <multiplier>838</multiplier>
--        <offset>0</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>VELOCITY</type>
--        <p_gain>0.20</p_gain>
--        <i_gain>0</i_gain>
--        <d_gain>0</d_gain>
--        <i_max>0</i_max>
--        <i_min>0</i_min>
--        <cmd_max>2.5</cmd_max>
--        <cmd_min>-2.5</cmd_min>
--        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
--      </control>
--
--      <control channel="1">
--        <jointName>iris_with_standoffs::rotor_1_joint</jointName>
--        <useForce>1</useForce>
--        <multiplier>838</multiplier>
--        <offset>0</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>VELOCITY</type>
--        <p_gain>0.20</p_gain>
--        <i_gain>0</i_gain>
--        <d_gain>0</d_gain>
--        <i_max>0</i_max>
--        <i_min>0</i_min>
--        <cmd_max>2.5</cmd_max>
--        <cmd_min>-2.5</cmd_min>
--        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
--      </control>
--
--      <control channel="2">
--        <jointName>iris_with_standoffs::rotor_2_joint</jointName>
--        <useForce>1</useForce>
--        <multiplier>-838</multiplier>
--        <offset>0</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>VELOCITY</type>
--        <p_gain>0.20</p_gain>
--        <i_gain>0</i_gain>
--        <d_gain>0</d_gain>
--        <i_max>0</i_max>
--        <i_min>0</i_min>
--        <cmd_max>2.5</cmd_max>
--        <cmd_min>-2.5</cmd_min>
--        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
--      </control>
--
--      <control channel="3">
--        <jointName>iris_with_standoffs::rotor_3_joint</jointName>
--        <useForce>1</useForce>
--        <multiplier>-838</multiplier>
--        <offset>0</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>VELOCITY</type>
--        <p_gain>0.20</p_gain>
--        <i_gain>0</i_gain>
--        <d_gain>0</d_gain>
--        <i_max>0</i_max>
--        <i_min>0</i_min>
--        <cmd_max>2.5</cmd_max>
--        <cmd_min>-2.5</cmd_min>
--        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
--      </control>
--
--      <!-- roll range is -30 to +30 deg -->
--      <control channel="8">
--        <jointName>gimbal::roll_joint</jointName>
--        <multiplier>1.047197551196</multiplier>
--        <offset>-0.5</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>COMMAND</type>
--        <cmd_topic>/gimbal/cmd_roll</cmd_topic>
--        <p_gain>2</p_gain>
--      </control>
--
--      <!-- pitch range is -135 to +45 deg -->
--      <control channel="9">
--        <jointName>gimbal::pitch_joint</jointName>
--        <multiplier>-3.14159265</multiplier>
--        <offset>-0.75</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>COMMAND</type>
--        <cmd_topic>/gimbal/cmd_pitch</cmd_topic>
--        <p_gain>2</p_gain>
--      </control>
--
--      <!-- yaw range is -160 to +160 deg -->
--      <control channel="10">
--        <jointName>gimbal::yaw_joint</jointName>
--        <multiplier>-5.5850536</multiplier>
--        <offset>-0.5</offset>
--        <servo_min>1100</servo_min>
--        <servo_max>1900</servo_max>
--        <type>COMMAND</type>
--        <cmd_topic>/gimbal/cmd_yaw</cmd_topic>
--        <p_gain>2</p_gain>
--      </control>
--
--    </plugin>
--
--    <plugin
--      filename="gz-sim-joint-position-controller-system"
--      name="gz::sim::systems::JointPositionController">
--      <joint_name>gimbal::roll_joint</joint_name>
--      <topic>/gimbal/cmd_roll</topic>
--      <p_gain>2</p_gain>
--    </plugin>
--    <plugin
--      filename="gz-sim-joint-position-controller-system"
--      name="gz::sim::systems::JointPositionController">
--      <joint_name>gimbal::pitch_joint</joint_name>
--      <topic>/gimbal/cmd_pitch</topic>
--      <p_gain>2</p_gain>
--    </plugin>
--    <plugin
--      filename="gz-sim-joint-position-controller-system"
--      name="gz::sim::systems::JointPositionController">
--      <joint_name>gimbal::yaw_joint</joint_name>
--      <topic>/gimbal/cmd_yaw</topic>
--      <p_gain>2</p_gain>
--    </plugin>
--
--  </model>
--</sdf>
+ #if DEBUG_JSON_IO
+-    gzdbg << "sent " << bytes_sent <<  " bytes to "
++    gzdbg << "sent " << bytesSent <<  " bytes to "
+         << this->dataPtr->fcu_address << ":"
+         << this->dataPtr->fcu_port_out << "\n"
+         << "frame_count: " << this->dataPtr->fcu_frame_count << "\n";

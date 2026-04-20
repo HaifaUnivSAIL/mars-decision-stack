@@ -29,6 +29,7 @@ CONTROL_COMPONENTS = {
     'manual_runtime_test',
     'command_publisher',
     'scenario_node',
+    'swarm_scenario',
     'ros_alate',
     'mc',
     'hlc',
@@ -206,6 +207,7 @@ class ProfileAnalyzer:
     def __init__(self, run_dir: Path):
         self.run_dir = run_dir.resolve()
         self.profile_dir = self.run_dir / 'diagnostics' / 'profile'
+        self.readiness_dir = self.run_dir / 'diagnostics' / 'readiness'
         self.manifest = load_json(self.profile_dir / 'profile.manifest.json')
         self.summary_path = self.profile_dir / 'summary.json'
         self.summary_md_path = self.profile_dir / 'summary.md'
@@ -443,6 +445,40 @@ class ProfileAnalyzer:
             'startup_time_to_hlc_ready_sec': None if hlc_ready is None or first_row_time is None else hlc_ready - first_row_time,
         }
 
+    def _startup_diagnostics(self, drone_id: str) -> dict[str, Any]:
+        endpoint_report = load_json(self.readiness_dir / f'{drone_id}.pre_hlc_endpoint.json')
+        readiness_report = load_json(self.readiness_dir / f'{drone_id}.json')
+        failure_report = load_json(self.readiness_dir / f'{drone_id}.startup_failure.json')
+
+        failure_stage = None
+        failure_reason = None
+        if failure_report:
+            failure_stage = failure_report.get('stage')
+            failure_reason = (
+                ((failure_report.get('readiness_report') or {}).get('failure_reason'))
+                or ((failure_report.get('endpoint_report') or {}).get('failure_reason'))
+                or failure_stage
+            )
+
+        serial_events = (failure_report or {}).get('sitl_serial_events') or {}
+        return {
+            'startup_endpoint_probe_ready': endpoint_report.get('ready'),
+            'startup_endpoint_probe_failure_reason': endpoint_report.get('failure_reason'),
+            'startup_post_ready_probe_ready': readiness_report.get('ready'),
+            'startup_post_ready_probe_failure_reason': readiness_report.get('failure_reason'),
+            'startup_failure_stage': failure_stage,
+            'startup_failure_reason': failure_reason,
+            'startup_serial1_open_count': safe_int(serial_events.get('serial1_open_count')),
+            'startup_serial1_close_count': safe_int(serial_events.get('serial1_close_count')),
+            'startup_serial2_open_count': safe_int(serial_events.get('serial2_open_count')),
+            'startup_serial2_close_count': safe_int(serial_events.get('serial2_close_count')),
+            'startup_heartbeat_timeout_count': safe_int(((failure_report or {}).get('hlc_markers') or {}).get('heartbeat_timeout_count')),
+            'startup_first_status_sample': (failure_report or {}).get('first_status_sample'),
+            'startup_first_unready_status': (failure_report or {}).get('first_unready_status'),
+            'startup_first_ready_like_status': (failure_report or {}).get('first_ready_like_status'),
+            'startup_status_sample_count': safe_int((failure_report or {}).get('status_sample_count')),
+        }
+
     def _first_servo_change_latency(self, drone_id: str, command_time: float) -> dict[str, float | None]:
         rows = self._servo_rows(drone_id)
         if not rows:
@@ -629,6 +665,7 @@ class ProfileAnalyzer:
 
     def _drone_summary(self, drone_id: str) -> dict[str, Any]:
         startup = self._startup_metrics(drone_id)
+        startup_diagnostics = self._startup_diagnostics(drone_id)
         operator_commands = self._operator_commands(drone_id)
         velocity_commands = self._velocity_commands(drone_id)
         latest_velocity = velocity_commands[-1]['wall_time_epoch_sec'] if velocity_commands else None
@@ -640,6 +677,7 @@ class ProfileAnalyzer:
         idle_drift = self._idle_drift_summary(drone_id, startup['hlc_ready_wall_time_sec'])
         return {
             **startup,
+            **startup_diagnostics,
             'operator_command_count': len(operator_commands),
             'velocity_command_count': len(velocity_commands),
             'command_to_state_transition_latency': state_latency,
@@ -1142,6 +1180,102 @@ class ProfileAnalyzer:
             )
         return windows
 
+    def _fleet_startup_summary(self) -> dict[str, Any]:
+        drones: dict[str, Any] = {}
+        for drone in self.manifest.get('drones', []):
+            drone_id = drone['id']
+            startup = self._startup_metrics(drone_id)
+            diagnostics = self._startup_diagnostics(drone_id)
+            drones[drone_id] = {
+                **startup,
+                **diagnostics,
+            }
+        return {'drones': drones}
+
+    def _swarm_component_rows(self) -> list[dict[str, Any]]:
+        return [row for row in self.component_events if row.get('component') == 'swarm_scenario']
+
+    def _swarm_summary(self) -> dict[str, Any]:
+        rows = self._swarm_component_rows()
+        if not rows:
+            return {}
+
+        phase_sequence: list[str] = []
+        takeoff_completed = None
+        abort_event = None
+        finish_event = None
+        hold_errors: list[dict[str, float | None]] = []
+        translation_errors: list[dict[str, float | None]] = []
+        actions: list[dict[str, Any]] = []
+        scenario_name = None
+
+        for row in rows:
+            payload = row.get('payload', {})
+            scenario_name = scenario_name or payload.get('scenario_name')
+            event_type = row.get('event_type')
+            if event_type == 'scenario_phase_entered':
+                phase = str(payload.get('phase', ''))
+                if phase and (not phase_sequence or phase_sequence[-1] != phase):
+                    phase_sequence.append(phase)
+            elif event_type == 'group_takeoff_completed':
+                takeoff_completed = payload
+            elif event_type == 'group_abort_triggered':
+                abort_event = payload
+            elif event_type == 'scenario_finished':
+                finish_event = payload
+            elif event_type == 'swarm_action_completed':
+                action = {
+                    'action_index': safe_int(payload.get('action_index')),
+                    'action_kind': payload.get('action_kind'),
+                    'label': payload.get('label'),
+                    'duration_sec': safe_float(payload.get('duration_sec')),
+                    'sample_count': safe_int(payload.get('sample_count')),
+                    'aggregate_max_horizontal_error_m': safe_float(payload.get('aggregate_max_horizontal_error_m')),
+                    'aggregate_max_vertical_error_m': safe_float(payload.get('aggregate_max_vertical_error_m')),
+                    'aggregate_max_yaw_error_deg': safe_float(payload.get('aggregate_max_yaw_error_deg')),
+                    'per_drone': payload.get('per_drone') or {},
+                }
+                actions.append(action)
+                if action['action_kind'] == 'hold':
+                    hold_errors.append(action)
+                if action['action_kind'] in {'translate_world', 'translate_body'}:
+                    translation_errors.append(action)
+
+        def _max_metric(items: list[dict[str, Any]], key: str) -> float | None:
+            values = [safe_float(item.get(key)) for item in items]
+            values = [value for value in values if value is not None]
+            return max(values) if values else None
+
+        return {
+            'scenario_name': scenario_name,
+            'event_count': len(rows),
+            'phase_sequence': phase_sequence,
+            'phase_transition_count': len(phase_sequence),
+            'group_takeoff_spread_sec': None if takeoff_completed is None else safe_float(takeoff_completed.get('takeoff_spread_sec')),
+            'group_takeoff_completed': takeoff_completed is not None,
+            'abort': {
+                'triggered': abort_event is not None,
+                'reason': None if abort_event is None else abort_event.get('reason'),
+                'drone_id': None if abort_event is None else abort_event.get('drone_id'),
+            },
+            'finished': {
+                'seen': finish_event is not None,
+                'failed': None if finish_event is None else safe_bool(finish_event.get('failed')),
+                'total_duration_sec': None if finish_event is None else safe_float(finish_event.get('total_duration_sec')),
+            },
+            'hold_error': {
+                'max_horizontal_m': _max_metric(hold_errors, 'aggregate_max_horizontal_error_m'),
+                'max_vertical_m': _max_metric(hold_errors, 'aggregate_max_vertical_error_m'),
+                'max_yaw_deg': _max_metric(hold_errors, 'aggregate_max_yaw_error_deg'),
+            },
+            'translation_error': {
+                'max_horizontal_m': _max_metric(translation_errors, 'aggregate_max_horizontal_error_m'),
+                'max_vertical_m': _max_metric(translation_errors, 'aggregate_max_vertical_error_m'),
+                'max_yaw_deg': _max_metric(translation_errors, 'aggregate_max_yaw_error_deg'),
+            },
+            'actions': actions,
+        }
+
     def _build_control_events(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for row in self.ros_events:
@@ -1240,11 +1374,14 @@ class ProfileAnalyzer:
 
     def _build_control_windows(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         control_windows: list[dict[str, Any]] = []
+        swarm_summary = self._swarm_summary()
         summary: dict[str, Any] = {
             'run_id': self.manifest.get('run_id'),
             'mode': self.manifest.get('mode'),
-            'control_focus': 'takeoff',
+            'control_focus': 'swarm' if swarm_summary else 'takeoff',
             'idle_drift_thresholds': self._idle_drift_thresholds(),
+            'startup': self._fleet_startup_summary(),
+            'swarm': swarm_summary,
             'drones': {},
         }
         for drone in self.manifest.get('drones', []):
@@ -1259,6 +1396,7 @@ class ProfileAnalyzer:
             control_windows.extend(rtl_windows)
             control_windows.extend(velocity_windows)
             idle_drift = self._idle_drift_summary(drone_id, self._startup_metrics(drone_id)['hlc_ready_wall_time_sec'])
+            startup_diagnostics = self._startup_diagnostics(drone_id)
             summary['drones'][drone_id] = {
                 'takeoff_windows': takeoff_windows,
                 'land_windows': land_windows,
@@ -1268,6 +1406,7 @@ class ProfileAnalyzer:
                 'latest_land': land_windows[-1] if land_windows else None,
                 'latest_rtl': rtl_windows[-1] if rtl_windows else None,
                 'latest_velocity': velocity_windows[-1] if velocity_windows else None,
+                **startup_diagnostics,
                 **idle_drift,
             }
         write_csv_rows(
@@ -1314,23 +1453,34 @@ class ProfileAnalyzer:
         world_rtf = summary.get('world', {}).get('real_time_factor', {}).get('median')
         if world_rtf is not None and world_rtf < 0.7:
             findings.append({'priority': 1, 'title': 'Simulator RTF collapse', 'detail': f'median real_time_factor={world_rtf:.3f}'})
+        for drone_id, startup in summary.get('startup', {}).get('drones', {}).items():
+            stage = startup.get('startup_failure_stage')
+            if not stage:
+                continue
+            findings.append(
+                {
+                    'priority': 2,
+                    'title': f'Fleet startup failure ({drone_id})',
+                    'detail': f"stage={stage} reason={startup.get('startup_failure_reason')}",
+                }
+            )
         for stream_name, stream_summary in summary.get('camera', {}).items():
             backlog = stream_summary.get('backlog_sec', {}).get('p95')
             fps = stream_summary.get('fps', {}).get('median')
             if backlog is not None and backlog > 1.0:
-                findings.append({'priority': 2, 'title': f'Active camera backlog growth ({stream_name})', 'detail': f'p95 backlog={backlog:.3f}s'})
+                findings.append({'priority': 3, 'title': f'Active camera backlog growth ({stream_name})', 'detail': f'p95 backlog={backlog:.3f}s'})
             if fps is not None and fps < 5.0:
-                findings.append({'priority': 3, 'title': f'Low active camera FPS ({stream_name})', 'detail': f'median fps={fps:.2f}'})
+                findings.append({'priority': 4, 'title': f'Low active camera FPS ({stream_name})', 'detail': f'median fps={fps:.2f}'})
         for container_name, container_summary in summary.get('containers', {}).items():
             cpu_peak = container_summary.get('cpu_percent', {}).get('max')
             if cpu_peak is not None and cpu_peak > 150.0:
-                findings.append({'priority': 4, 'title': f'High container CPU pressure ({container_name})', 'detail': f'peak cpu={cpu_peak:.1f}%'})
+                findings.append({'priority': 5, 'title': f'High container CPU pressure ({container_name})', 'detail': f'peak cpu={cpu_peak:.1f}%'})
         for drone_id, drone_summary in control_summary.get('drones', {}).items():
             latest_takeoff = drone_summary.get('latest_takeoff')
             if drone_summary.get('precommand_drift_gate_passed') is False:
                 findings.append(
                     {
-                        'priority': 5,
+                        'priority': 6,
                         'title': f'Ground drift before command ({drone_id})',
                         'detail': (
                             f"h={drone_summary.get('precommand_horizontal_drift_m'):.3f}m "
@@ -1342,7 +1492,7 @@ class ProfileAnalyzer:
             if drone_summary.get('uncommanded_post_foreign_command_drift_gate_passed') is False:
                 findings.append(
                     {
-                        'priority': 6,
+                        'priority': 7,
                         'title': f'Uncommanded drone motion after foreign command ({drone_id})',
                         'detail': (
                             f"h={drone_summary.get('uncommanded_post_foreign_command_horizontal_drift_m'):.3f}m "
@@ -1355,7 +1505,53 @@ class ProfileAnalyzer:
                 continue
             outcome = latest_takeoff.get('outcome')
             if outcome != 'success_climb':
-                findings.append({'priority': 7, 'title': f'Takeoff control anomaly ({drone_id})', 'detail': f'outcome={outcome}'})
+                findings.append({'priority': 8, 'title': f'Takeoff control anomaly ({drone_id})', 'detail': f'outcome={outcome}'})
+        swarm_summary = control_summary.get('swarm') or {}
+        if swarm_summary.get('abort', {}).get('triggered'):
+            findings.append(
+                {
+                    'priority': 9,
+                    'title': 'Swarm controller abort',
+                    'detail': (
+                        f"reason={swarm_summary.get('abort', {}).get('reason')} "
+                        f"drone={swarm_summary.get('abort', {}).get('drone_id')}"
+                    ),
+                }
+            )
+        hold_error = swarm_summary.get('hold_error') or {}
+        if (
+            (hold_error.get('max_horizontal_m') is not None and hold_error.get('max_horizontal_m') > 0.35)
+            or (hold_error.get('max_vertical_m') is not None and hold_error.get('max_vertical_m') > 0.25)
+        ):
+            findings.append(
+                {
+                    'priority': 10,
+                    'title': 'Formation hold error exceeds gate',
+                    'detail': (
+                        f"h={hold_error.get('max_horizontal_m')}m "
+                        f"v={hold_error.get('max_vertical_m')}m "
+                        f"yaw={hold_error.get('max_yaw_deg')}deg"
+                    ),
+                }
+            )
+        translation_error = swarm_summary.get('translation_error') or {}
+        if translation_error.get('max_horizontal_m') is not None and translation_error.get('max_horizontal_m') > 0.5:
+            findings.append(
+                {
+                    'priority': 11,
+                    'title': 'Formation translation error exceeds gate',
+                    'detail': f"max horizontal error={translation_error.get('max_horizontal_m')}m",
+                }
+            )
+        takeoff_spread_sec = swarm_summary.get('group_takeoff_spread_sec')
+        if takeoff_spread_sec is not None and takeoff_spread_sec > 5.0:
+            findings.append(
+                {
+                    'priority': 12,
+                    'title': 'Group takeoff spread exceeds gate',
+                    'detail': f'takeoff spread={takeoff_spread_sec:.3f}s',
+                }
+            )
         findings.sort(key=lambda row: (row['priority'], row['title']))
         return findings
 
@@ -1369,6 +1565,8 @@ class ProfileAnalyzer:
             'fleet': bool(self.manifest.get('fleet', False)),
             'visual_gui': bool(self.manifest.get('visual_gui', False)),
             'drones': {drone_id: self._drone_summary(drone_id) for drone_id in drone_ids},
+            'startup': self._fleet_startup_summary(),
+            'swarm': control_summary.get('swarm', {}),
             'world': self._world_summary(),
             'camera': self._camera_summary(),
             'containers': self._container_summary(),
@@ -1407,9 +1605,36 @@ class ProfileAnalyzer:
                 f"- `{stream_name}` fps median={stream_summary['fps'].get('median')} backlog p95={stream_summary['backlog_sec'].get('p95')} frame_count={stream_summary.get('frame_count')}"
             )
         lines.append('')
+        if summary.get('swarm'):
+            swarm_summary = summary.get('swarm', {})
+            lines.append('## Swarm')
+            lines.append(f"- Scenario: `{swarm_summary.get('scenario_name')}`")
+            lines.append(f"- Phase sequence: `{ '|'.join(swarm_summary.get('phase_sequence', [])) }`")
+            lines.append(f"- Group takeoff spread: `{swarm_summary.get('group_takeoff_spread_sec')}` s")
+            lines.append(
+                f"- Hold error h/v/yaw: `{swarm_summary.get('hold_error', {}).get('max_horizontal_m')}` / "
+                f"`{swarm_summary.get('hold_error', {}).get('max_vertical_m')}` / "
+                f"`{swarm_summary.get('hold_error', {}).get('max_yaw_deg')}`"
+            )
+            lines.append(
+                f"- Translation error h/v/yaw: `{swarm_summary.get('translation_error', {}).get('max_horizontal_m')}` / "
+                f"`{swarm_summary.get('translation_error', {}).get('max_vertical_m')}` / "
+                f"`{swarm_summary.get('translation_error', {}).get('max_yaw_deg')}`"
+            )
+            if swarm_summary.get('abort', {}).get('triggered'):
+                lines.append(
+                    f"- Abort: reason={swarm_summary.get('abort', {}).get('reason')} "
+                    f"drone={swarm_summary.get('abort', {}).get('drone_id')}"
+                )
+            lines.append('')
         lines.append('## Per Drone')
         for drone_id, drone_summary in summary.get('drones', {}).items():
             lines.append(f"- `{drone_id}` startup(mc/hlc)={drone_summary.get('startup_time_to_mc_standby_sec')} / {drone_summary.get('startup_time_to_hlc_ready_sec')} s")
+            if drone_summary.get('startup_failure_stage'):
+                lines.append(
+                    f"- `{drone_id}` startup failure stage={drone_summary.get('startup_failure_stage')} "
+                    f"reason={drone_summary.get('startup_failure_reason')}"
+                )
             lines.append(
                 f"- `{drone_id}` precommand drift h/v/yaw={drone_summary.get('precommand_horizontal_drift_m')} / {drone_summary.get('precommand_vertical_drift_m')} / {drone_summary.get('precommand_yaw_drift_deg')} samples={drone_summary.get('precommand_pose_sample_count')} gate={drone_summary.get('precommand_drift_gate_passed')}"
             )
@@ -1443,12 +1668,37 @@ class ProfileAnalyzer:
 
     def _render_control_markdown(self, summary: dict[str, Any]) -> str:
         lines = ['# Control Trace Summary', '', f"Run: `{summary.get('run_id', '')}`", f"Mode: `{summary.get('mode', '')}`", '']
+        if summary.get('swarm'):
+            lines.append('## Swarm')
+            lines.append(f"- Scenario: `{summary.get('swarm', {}).get('scenario_name')}`")
+            lines.append(f"- Group takeoff spread: `{summary.get('swarm', {}).get('group_takeoff_spread_sec')}` s")
+            lines.append(
+                f"- Hold error h/v/yaw: `{summary.get('swarm', {}).get('hold_error', {}).get('max_horizontal_m')}` / "
+                f"`{summary.get('swarm', {}).get('hold_error', {}).get('max_vertical_m')}` / "
+                f"`{summary.get('swarm', {}).get('hold_error', {}).get('max_yaw_deg')}`"
+            )
+            lines.append(
+                f"- Translation error h/v/yaw: `{summary.get('swarm', {}).get('translation_error', {}).get('max_horizontal_m')}` / "
+                f"`{summary.get('swarm', {}).get('translation_error', {}).get('max_vertical_m')}` / "
+                f"`{summary.get('swarm', {}).get('translation_error', {}).get('max_yaw_deg')}`"
+            )
+            if summary.get('swarm', {}).get('abort', {}).get('triggered'):
+                lines.append(
+                    f"- Abort: reason={summary.get('swarm', {}).get('abort', {}).get('reason')} "
+                    f"drone={summary.get('swarm', {}).get('abort', {}).get('drone_id')}"
+                )
+            lines.append('')
         for drone_id, drone_summary in summary.get('drones', {}).items():
             lines.append(f'## {drone_id}')
             lines.append(
                 f"- Precommand drift h/v/yaw: `{drone_summary.get('precommand_horizontal_drift_m')}` / `{drone_summary.get('precommand_vertical_drift_m')}` / `{drone_summary.get('precommand_yaw_drift_deg')}`"
             )
             lines.append(f"- Precommand pose samples / gate: `{drone_summary.get('precommand_pose_sample_count')}` / `{drone_summary.get('precommand_drift_gate_passed')}`")
+            if drone_summary.get('startup_failure_stage'):
+                lines.append(
+                    f"- Startup failure stage / reason: `{drone_summary.get('startup_failure_stage')}` / "
+                    f"`{drone_summary.get('startup_failure_reason')}`"
+                )
             lines.append(
                 f"- Uncommanded-after-foreign drift h/v/yaw: `{drone_summary.get('uncommanded_post_foreign_command_horizontal_drift_m')}` / `{drone_summary.get('uncommanded_post_foreign_command_vertical_drift_m')}` / `{drone_summary.get('uncommanded_post_foreign_command_yaw_drift_deg')}`"
             )

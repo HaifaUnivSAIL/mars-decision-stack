@@ -146,12 +146,17 @@ from pathlib import Path
 output_path = Path(sys.argv[1])
 count = int(sys.argv[2])
 runtime_profile = sys.argv[3]
+alate_profile = (
+    "config/alate/uav.visual.fleet.sitl.json"
+    if count > 1
+    else "config/alate/uav.visual.sitl.json"
+)
 
 manifest = {
     "active_drone_id": "drone_1",
     "defaults": {
         "camera_deployment_config": "config/visual/camera.deployment.json",
-        "alate_profile": "config/alate/uav.visual.sitl.json",
+        "alate_profile": alate_profile,
         "ros_alate_profile": "config/ros_alate/adapter.yaml",
         "ros_nemala_profile": "config/ros_nemala/node_manager.yaml",
         "runtime_profile": runtime_profile,

@@ -128,6 +128,7 @@ def test_fleet_manifest_derives_unique_namespaces_ports_and_topics(tmp_path: Pat
     assert fleet['active_drone_id'] == 'drone_1'
     assert fleet['runtime_profile'] == 'single_equivalent'
     assert fleet['physics']['max_step_size'] == 0.005
+    assert fleet['fdm_exchange']['online_recv_timeout_ms'] == 1
     assert fleet['camera_streams']['deployed']['width'] == 640
     assert fleet['camera_streams']['chase']['update_rate_hz'] == 15.0
     assert fleet['rendering']['sun_cast_shadows'] is False
@@ -153,11 +154,97 @@ def test_single_equivalent_profile_matches_single_runtime_defaults(tmp_path: Pat
 
     assert fleet['runtime_profile'] == 'single_equivalent'
     assert fleet['physics']['max_step_size'] == 0.001
+    assert fleet['fdm_exchange']['online_recv_timeout_ms'] == 10
     assert fleet['rendering']['sun_cast_shadows'] is True
     assert fleet['camera_streams']['chase']['width'] == 1280
     assert fleet['camera_streams']['chase']['update_rate_hz'] == 30.0
     assert fleet['sensor_behavior']['deployed']['always_on'] is True
     assert fleet['sensor_behavior']['deployed']['remove_plugins'] == []
+
+
+def test_multi_drone_single_equivalent_manifest_clamps_online_recv_timeout(tmp_path: Path) -> None:
+    module = load_module(FLEET_MANIFEST_MODULE, 'fleet_manifest')
+    manifest_path = tmp_path / 'visual.multi.single_equivalent.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'active_drone_id': 'drone_1',
+                'defaults': {
+                    'camera_deployment_config': 'config/visual/camera.deployment.json',
+                    'alate_profile': 'config/alate/uav.visual.sitl.json',
+                    'ros_alate_profile': 'config/ros_alate/adapter.yaml',
+                    'ros_nemala_profile': 'config/ros_nemala/node_manager.yaml',
+                    'runtime_profile': 'single_equivalent',
+                },
+                'drones': [
+                    {'id': 'drone_1', 'spawn': {'x': 0.0, 'y': 0.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                    {'id': 'drone_2', 'spawn': {'x': 0.0, 'y': 4.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                ],
+            },
+            indent=2,
+        )
+        + '\n'
+    )
+
+    fleet = module.load_fleet_definition(manifest_path, ROOT)
+
+    assert fleet['runtime_profile'] == 'single_equivalent'
+    assert fleet['fdm_exchange']['offline_recv_timeout_ms'] == 1
+    assert fleet['fdm_exchange']['online_recv_timeout_ms'] == 1
+
+
+def test_multi_drone_fleet_alate_profile_preserves_fleet_takeoff_timeouts(tmp_path: Path) -> None:
+    manifest_path = tmp_path / 'visual.multi.fleet-alate.json'
+    manifest_path.write_text(
+        json.dumps(
+            {
+                'active_drone_id': 'drone_1',
+                'defaults': {
+                    'camera_deployment_config': 'config/visual/camera.deployment.json',
+                    'alate_profile': 'config/alate/uav.visual.fleet.sitl.json',
+                    'ros_alate_profile': 'config/ros_alate/adapter.yaml',
+                    'ros_nemala_profile': 'config/ros_nemala/node_manager.yaml',
+                    'runtime_profile': 'single_equivalent',
+                },
+                'drones': [
+                    {'id': 'drone_1', 'spawn': {'x': 0.0, 'y': 0.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                    {'id': 'drone_2', 'spawn': {'x': 0.0, 'y': 4.0, 'z': 0.195, 'yaw_deg': 90.0}},
+                ],
+            },
+            indent=2,
+        )
+        + '\n'
+    )
+    output_dir = tmp_path / 'out-fleet-alate'
+    subprocess.run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            '--fleet-config',
+            str(manifest_path),
+            '--run-id',
+            'pytest-fleet-alate',
+            '--output-dir',
+            str(output_dir),
+            '--source-model',
+            str(SOURCE_MODEL),
+            '--world-template',
+            str(WORLD_TEMPLATE),
+            '--root-dir',
+            str(ROOT),
+        ],
+        check=True,
+    )
+
+    drone_1_alate = json.loads((output_dir / 'runtime' / 'drone_1' / 'uav.visual.sitl.json').read_text())
+    drone_2_alate = json.loads((output_dir / 'runtime' / 'drone_2' / 'uav.visual.sitl.json').read_text())
+    for cfg, expected_port in ((drone_1_alate, 5762), (drone_2_alate, 5772)):
+        assert _normalize_autopilot_master(cfg['autopilot']['master']) == ('tcp', expected_port)
+        assert cfg['autopilot']['heartbeat_timeout_sec'] == 120
+        assert cfg['autopilot']['connection_timeout_sec'] == 180
+        assert cfg['autopilot']['arm_timeout_ms'] == 20000
+        assert cfg['autopilot']['takeoff_timeout_ms'] == 300000
+        assert cfg['autopilot']['require_gps_fix_for_ready'] is True
 
 
 def test_fleet_generator_applies_explicit_fleet_control_stable_profile(tmp_path: Path) -> None:
@@ -207,6 +294,9 @@ def test_fleet_generator_applies_explicit_fleet_control_stable_profile(tmp_path:
 
     model_1_root = ET.fromstring(
         (output_dir / 'models' / 'iris_with_camera_experiment_pytest_fleet_drone_1' / 'model.sdf').read_text()
+    )
+    model_2_root = ET.fromstring(
+        (output_dir / 'models' / 'iris_with_camera_experiment_pytest_fleet_drone_2' / 'model.sdf').read_text()
     )
     mount_joint = model_1_root.find('.//joint[@name="deployed_camera_mount_joint"]')
     assert mount_joint is not None
@@ -281,6 +371,7 @@ def test_single_equivalent_generator_keeps_single_like_sensor_behavior(tmp_path:
     assert deployed_camera_sensor is not None
     assert deployed_camera_sensor.find('./plugin[@name="CameraZoomPlugin"]') is not None
     assert deployed_camera_sensor.find('./plugin[@name="GstCameraPlugin"]') is not None
+    assert model_root.find('.//plugin[@name="GstCameraPlugin"]/udp_port').text == '5600'
     assert deployed_camera_sensor.find('visualize').text == 'true'
     assert deployed_camera_sensor.find('always_on').text == '1'
 
